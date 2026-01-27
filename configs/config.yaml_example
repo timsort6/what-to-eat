@@ -1,0 +1,80 @@
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  # gin mode: debug/release/test
+  mode: release
+
+data:
+  database:
+    # pgsql/mysql (default pgsql)
+    type: pgsql
+    pgsql:
+      host: "127.0.0.1"
+      port: 5432
+      user: "postgres"
+      password: "postgres"
+      dbname: "food_agent"
+      sslmode: "disable"
+      timezone: "Asia/Shanghai"
+      # gorm log level: silent/error/warn/info (or integer)
+      log_level: "warn"
+    mysql:
+      host: "127.0.0.1"
+      port: 3306
+      user: "root"
+      password: "123456"
+      dbname: "food_agent"
+      # gorm log level: silent/error/warn/info (or integer)
+      log_level: "warn"
+    pool:
+      max_open_conns: 0
+      max_idle_conns: 0
+      conn_max_lifetime_seconds: 0
+  redis:
+    addr: "127.0.0.1:6379"
+    password: ""
+    db: 0
+
+llm:
+  # OpenAI-compatible 网关地址（例如通义/DeepSeek 的网关，如果兼容 OpenAI 协议可直接替换 base_url）
+  base_url: "https://api.openai.com/v1"
+  api_key: ""
+  # 模型名由网关决定（例如 deepseek-chat / qwen-max 等）
+  model: ""
+  language: "zh"
+  timeout_seconds: 60
+  max_retries: 2
+
+# 高德地图（Gaode/AMap）开放平台配置：用于本项目内置的 AMap SDK（以及 AMap MCP server）。
+amap:
+  key: ""
+  base_url: "https://restapi.amap.com/v3"
+  timeout_seconds: 5
+
+mcp:
+  client:
+    initialize_timeout_seconds: 5
+    call_timeout_seconds: 10
+  # 通用 MCP server 定义（当前 internal/mcp 只实现 stdio transport）。
+  servers:
+    amap:
+      # enabled=true 时要求 command 非空（用于启动 MCP server 子进程）。
+      enabled: false
+      transport: stdio
+      # stdio 模式：command/args 用于启动 MCP server 子进程
+      # 开发阶段可以用：command: "go" args: ["run","./cmd/mcp-server"]
+      command: ""
+      args: []
+      # 传给 MCP server 子进程的环境变量（可选）
+      env: {}
+
+log:
+  level: "info"
+  # 为空表示只输出到 stdout；不为空则同时输出到文件（支持滚动）
+  filename: ""
+  max_size: 10
+  max_backups: 10
+  max_age: 30
+  compress: false
+  # >= 该级别时追加 stacktrace
+  add_stack_level: "fatal"
