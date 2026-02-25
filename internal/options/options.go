@@ -64,12 +64,15 @@ type MCPServersOptions struct {
 }
 
 type MCPAmapServerOptions struct {
-	Enabled   bool              `mapstructure:"enabled" yaml:"enabled"`
-	Transport string            `mapstructure:"transport" yaml:"transport"`
-	Command   string            `mapstructure:"command" yaml:"command"`
-	Args      []string          `mapstructure:"args" yaml:"args"`
-	WorkDir   string            `mapstructure:"work_dir" yaml:"work_dir"`
-	Env       map[string]string `mapstructure:"env" yaml:"env"`
+	Enabled   bool     `mapstructure:"enabled" yaml:"enabled"`
+	Transport string   `mapstructure:"transport" yaml:"transport"`
+	Command   string   `mapstructure:"command" yaml:"command"`
+	Args      []string `mapstructure:"args" yaml:"args"`
+	WorkDir   string   `mapstructure:"work_dir" yaml:"work_dir"`
+	// ConfigFile points to cmd/mcp-server's independent config file.
+	// The web server uses it only to start/connect the MCP server process.
+	ConfigFile string            `mapstructure:"config_file" yaml:"config_file"`
+	Env        map[string]string `mapstructure:"env" yaml:"env"`
 }
 
 func NewServerRunOptions() *ServerRunOptions {
@@ -125,12 +128,13 @@ func NewServerRunOptions() *ServerRunOptions {
 			},
 			Servers: MCPServersOptions{
 				Amap: MCPAmapServerOptions{
-					Enabled:   false,
-					Transport: "stdio",
-					Command:   "",
-					Args:      nil,
-					WorkDir:   "",
-					Env:       map[string]string{},
+					Enabled:    false,
+					Transport:  "stdio",
+					Command:    "",
+					Args:       nil,
+					WorkDir:    "",
+					ConfigFile: "",
+					Env:        map[string]string{},
 				},
 			},
 		},
@@ -172,6 +176,7 @@ func (o *ServerRunOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.MCP.Servers.Amap.Command, "mcp.servers.amap.command", o.MCP.Servers.Amap.Command, "amap mcp server command")
 	fs.StringSliceVar(&o.MCP.Servers.Amap.Args, "mcp.servers.amap.args", o.MCP.Servers.Amap.Args, "amap mcp server args")
 	fs.StringVar(&o.MCP.Servers.Amap.WorkDir, "mcp.servers.amap.work_dir", o.MCP.Servers.Amap.WorkDir, "amap mcp server working directory")
+	fs.StringVar(&o.MCP.Servers.Amap.ConfigFile, "mcp.servers.amap.config_file", o.MCP.Servers.Amap.ConfigFile, "amap mcp server config file (passed via FOOD_AGENT_MCP_CONFIG)")
 	fs.StringToStringVar(&o.MCP.Servers.Amap.Env, "mcp.servers.amap.env", o.MCP.Servers.Amap.Env, "amap mcp server env map, e.g. KEY=VALUE")
 
 	// log.*

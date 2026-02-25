@@ -65,6 +65,11 @@ mcp:
       # 开发阶段可以用：command: "go" args: ["run","./cmd/mcp-server"]
       command: ""
       args: []
+      # 启动子进程时的工作目录（可选）。当 command/args 使用相对路径时会更稳。
+      work_dir: ""
+      # MCP server 独立配置文件（强烈建议放 AMap key 等敏感信息）。
+      # food-agent 主 server 只负责把这个路径传给子进程（通过 FOOD_AGENT_MCP_CONFIG）。
+      config_file: "configs/mcp-amap.yaml"
       # 传给 MCP server 子进程的环境变量（可选）
       env: {}
 

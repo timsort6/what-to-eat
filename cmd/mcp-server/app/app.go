@@ -10,8 +10,7 @@ func Execute() error {
 }
 
 func NewCommand() *cobra.Command {
-	opts := options.NewServerRunOptions()
-	opts.ConfigFile = "" // default: do not require config file for stdio server
+	opts := options.NewMCPServerRunOptions()
 
 	cmd := &cobra.Command{
 		Use:   "food-agent-mcp-server",

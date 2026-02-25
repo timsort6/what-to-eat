@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -220,11 +219,15 @@ func (s *ConsoleServer) initClients(ctx context.Context) error {
 	amapKey := strings.TrimSpace(s.Opts.Amap.Key)
 	amapBaseURL := strings.TrimSpace(s.Opts.Amap.BaseURL)
 	amapTimeout := time.Duration(s.Opts.Amap.TimeoutSeconds) * time.Second
-	s.Amap = amap.NewClient(
-		amapKey,
-		amap.WithBaseURL(amapBaseURL),
-		amap.WithTimeout(amapTimeout),
-	)
+	// AMap key may live in the MCP server config (independent). If key is empty,
+	// keep the SDK client nil so the web server can still start.
+	if amapKey != "" {
+		s.Amap = amap.NewClient(
+			amapKey,
+			amap.WithBaseURL(amapBaseURL),
+			amap.WithTimeout(amapTimeout),
+		)
+	}
 
 	// LLM (Eino) init: build ChatModel config.
 	if s.Opts.LLM == nil {
@@ -251,29 +254,22 @@ func (s *ConsoleServer) initAmapMCP(ctx context.Context) error {
 	if strings.TrimSpace(so.Command) == "" {
 		return fmt.Errorf("mcp.servers.amap.enabled=true but command is empty")
 	}
+	if strings.TrimSpace(so.ConfigFile) == "" {
+		return fmt.Errorf("mcp.servers.amap.enabled=true but config_file is empty")
+	}
 
 	env := make(map[string]string, len(so.Env)+8)
 	for k, v := range so.Env {
 		env[k] = v
 	}
 
-	// Pass the resolved AMap settings into the subprocess via unified env keys.
-	if strings.TrimSpace(s.Opts.Amap.Key) != "" {
-		env["FOOD_AGENT_AMAP_KEY"] = strings.TrimSpace(s.Opts.Amap.Key)
-	}
-	if strings.TrimSpace(s.Opts.Amap.BaseURL) != "" {
-		env["FOOD_AGENT_AMAP_BASE_URL"] = strings.TrimSpace(s.Opts.Amap.BaseURL)
-	}
-	if s.Opts.Amap.TimeoutSeconds > 0 {
-		env["FOOD_AGENT_AMAP_TIMEOUT_SECONDS"] = strconv.Itoa(s.Opts.Amap.TimeoutSeconds)
-	}
-	if strings.TrimSpace(s.Opts.ConfigFile) != "" {
-		env["FOOD_AGENT_CONFIG"] = strings.TrimSpace(s.Opts.ConfigFile)
-	}
+	// The MCP server reads its own independent config file.
+	env["FOOD_AGENT_MCP_CONFIG"] = strings.TrimSpace(so.ConfigFile)
 
 	c, err := mcp.NewStdioClient(ctx, mcp.StdioClientOptions{
 		Command: strings.TrimSpace(so.Command),
 		Args:    so.Args,
+		WorkDir: strings.TrimSpace(so.WorkDir),
 		Env:     env,
 	})
 	if err != nil {

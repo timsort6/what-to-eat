@@ -23,11 +23,11 @@ type jsonRPCError struct {
 }
 
 // tools/list
-type toolsListResult struct {
-	Tools []toolDef `json:"tools"`
+type ToolsListResult struct {
+	Tools []ToolDef `json:"tools"`
 }
 
-type toolDef struct {
+type ToolDef struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	InputSchema map[string]any `json:"inputSchema,omitempty"`
@@ -47,4 +47,3 @@ type toolContent struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
 }
-

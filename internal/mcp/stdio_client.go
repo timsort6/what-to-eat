@@ -15,7 +15,7 @@ import (
 // StdioClient 通过启动 MCP server 子进程并使用 stdin/stdout 通信来调用工具。
 //
 // 说明：
-// - 该实现只覆盖当前阶段需要的最小能力（initialize / tools/call）。
+// - 该实现只覆盖当前阶段需要的最小能力（initialize / tools/list / tools/call）。
 // - 未来可以扩展为连接多个 server、支持 resources 等。
 type StdioClient struct {
 	cmd    *exec.Cmd
@@ -30,6 +30,9 @@ type StdioClient struct {
 type StdioClientOptions struct {
 	Command string
 	Args    []string
+	// WorkDir sets the working directory for the spawned MCP server process.
+	// If empty, it inherits the current process working directory.
+	WorkDir string
 	Env     map[string]string
 }
 
@@ -39,6 +42,9 @@ func NewStdioClient(ctx context.Context, opts StdioClientOptions) (*StdioClient,
 	}
 
 	cmd := exec.CommandContext(ctx, opts.Command, opts.Args...)
+	if opts.WorkDir != "" {
+		cmd.Dir = opts.WorkDir
+	}
 	cmd.Stderr = os.Stderr
 
 	// 继承环境变量，并追加自定义 env。
@@ -102,6 +108,14 @@ func (c *StdioClient) Close() error {
 		<-done
 		return nil
 	}
+}
+
+func (c *StdioClient) ListTools(ctx context.Context) (ToolsListResult, error) {
+	var out ToolsListResult
+	if err := c.call(ctx, "tools/list", nil, &out); err != nil {
+		return ToolsListResult{}, err
+	}
+	return out, nil
 }
 
 func (c *StdioClient) CallTool(ctx context.Context, name string, arguments map[string]any) (toolsCallResult, error) {

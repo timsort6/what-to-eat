@@ -45,13 +45,6 @@ func (o *ServerRunOptions) Validate() []error {
 		errs = append(errs, o.Log.Validate()...)
 	}
 
-	if o.Amap != nil && o.Amap.Key == "" {
-		// The MCP server requires it; the web server may not.
-		// Keep it as soft-validation: only error if mcp-server or mcp amap is enabled.
-		if o.MCP.Servers.Amap.Enabled {
-			errs = append(errs, fmt.Errorf("amap.key is required when mcp.servers.amap.enabled=true"))
-		}
-	}
 	if o.Amap != nil && o.Amap.TimeoutSeconds < 0 {
 		errs = append(errs, fmt.Errorf("amap.timeout_seconds is invalid"))
 	}
@@ -64,6 +57,9 @@ func (o *ServerRunOptions) Validate() []error {
 			// Not required for cmd/mcp-server itself, but required when we run stdio child process.
 			// Keep it strict at options level for now.
 			errs = append(errs, fmt.Errorf("mcp.servers.amap.command is required when enabled stdio"))
+		}
+		if strings.TrimSpace(o.MCP.Servers.Amap.ConfigFile) == "" {
+			errs = append(errs, fmt.Errorf("mcp.servers.amap.config_file is required when enabled stdio"))
 		}
 	}
 
