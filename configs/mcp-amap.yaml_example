@@ -1,0 +1,19 @@
+# AMap MCP Server config (for cmd/mcp-server).
+#
+# This file is intentionally independent from the main web server config.
+# The web server only needs MCP connection config; the MCP server owns the AMap key.
+
+amap:
+  key: "c6d659aad44b485282faab67c7a4572a"
+  base_url: "https://restapi.amap.com/v3"
+  timeout_seconds: 5
+
+log:
+  level: "info"
+  filename: ""
+  max_size: 10
+  max_backups: 10
+  max_age: 30
+  compress: false
+  add_stack_level: "fatal"
+
