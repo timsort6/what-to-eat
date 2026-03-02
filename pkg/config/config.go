@@ -7,14 +7,11 @@ package config
 // flag(Changed) > env(FOOD_AGENT_*) > config file > defaults.
 type Config struct {
 	Server ServerConfig `mapstructure:"server" yaml:"server"`
+	Auth   AuthConfig   `mapstructure:"auth" yaml:"auth"`
 	Data   DataConfig   `mapstructure:"data" yaml:"data"`
 
 	// LLM is OpenAI-compatible LLM config (base_url/api_key/model...).
 	LLM LLMConfig `mapstructure:"llm" yaml:"llm"`
-
-	// Amap is the configuration for the built-in AMap (Gaode) SDK.
-	// This is mainly used by our AMap MCP server implementation.
-	Amap AmapConfig `mapstructure:"amap" yaml:"amap"`
 
 	// MCP holds Model Context Protocol configuration (clients + servers).
 	MCP MCPConfig `mapstructure:"mcp" yaml:"mcp"`
@@ -27,6 +24,12 @@ type ServerConfig struct {
 	Port        int    `mapstructure:"port" yaml:"port"`
 	// Mode is gin mode: debug/release/test.
 	Mode string `mapstructure:"mode" yaml:"mode"`
+}
+
+type AuthConfig struct {
+	JWTSecret           string `mapstructure:"jwt_secret" yaml:"jwt_secret"`
+	JWTExpiresInSeconds int    `mapstructure:"jwt_expires_in_seconds" yaml:"jwt_expires_in_seconds"`
+	Issuer              string `mapstructure:"issuer" yaml:"issuer"`
 }
 
 type DataConfig struct {
@@ -112,12 +115,13 @@ type MCPClientConfig struct {
 // MCPServerConfig is a generic MCP server definition.
 // Currently only "stdio" transport is implemented in internal/mcp.
 type MCPServerConfig struct {
-	Enabled   bool              `mapstructure:"enabled" yaml:"enabled"`
-	Transport string            `mapstructure:"transport" yaml:"transport"` // stdio/http/sse (future)
-	Command   string            `mapstructure:"command" yaml:"command"`
-	Args      []string          `mapstructure:"args" yaml:"args"`
-	Env       map[string]string `mapstructure:"env" yaml:"env"`
-	WorkDir   string            `mapstructure:"work_dir" yaml:"work_dir"`
+	Enabled    bool              `mapstructure:"enabled" yaml:"enabled"`
+	Transport  string            `mapstructure:"transport" yaml:"transport"` // stdio/http/sse (future)
+	Command    string            `mapstructure:"command" yaml:"command"`
+	Args       []string          `mapstructure:"args" yaml:"args"`
+	Env        map[string]string `mapstructure:"env" yaml:"env"`
+	WorkDir    string            `mapstructure:"work_dir" yaml:"work_dir"`
+	ConfigFile string            `mapstructure:"config_file" yaml:"config_file"`
 }
 
 type LogConfig struct {

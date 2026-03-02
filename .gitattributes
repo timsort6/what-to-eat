@@ -1,0 +1,26 @@
+# 1. 自动检测文本文件并统一转化为 LF 提交
+* text=auto
+
+# 2. 明确指定常见文本文件的换行符为 LF (即便在 Windows 上拉取也保持 LF)
+*.go      text eol=lf
+*.js      text eol=lf
+*.py      text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
+*.html    text eol=lf
+*.css     text eol=lf
+*.yml     text eol=lf
+
+# 3. 确保 Windows 批处理脚本保留 CRLF，否则可能无法运行
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+
+# 4. 声明二进制文件（不进行换行符转换）
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.pdf     binary
+*.woff    binary
+*.woff2   binary

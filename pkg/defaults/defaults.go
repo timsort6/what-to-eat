@@ -47,6 +47,11 @@ const (
 	DefaultMCPInitTimeoutSeconds = 5
 	DefaultMCPCallTimeoutSeconds = 10
 
+	// Auth
+	DefaultAuthJWTSecret           = "change-me"
+	DefaultAuthJWTExpiresInSeconds = 86400
+	DefaultAuthIssuer              = "food-agent"
+
 	// Log
 	DefaultLogLevel         = "info"
 	DefaultLogAddStackLevel = "fatal"

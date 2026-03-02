@@ -79,6 +79,6 @@ func CheckToken(manager token.Manager) gin.HandlerFunc {
 		ctx := token.WithPayload(c.Request.Context(), payload)
 		ctx = context.WithValue(ctx, "token", tokenVal)
 		c.Request = c.Request.WithContext(ctx)
-		return
+		c.Next()
 	}
 }

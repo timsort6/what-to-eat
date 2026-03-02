@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"food-agent/pkg/defaults"
 )
 
 func (o *ServerRunOptions) Validate() []error {
@@ -41,25 +43,42 @@ func (o *ServerRunOptions) Validate() []error {
 	if o.LLM != nil {
 		errs = append(errs, o.LLM.Validate()...)
 	}
+	if o.Auth == nil {
+		errs = append(errs, fmt.Errorf("auth options is nil"))
+	} else {
+		if strings.TrimSpace(o.Auth.JWTSecret) == "" {
+			errs = append(errs, fmt.Errorf("auth.jwt_secret is required"))
+		}
+		if o.Auth.JWTExpiresInSeconds <= 0 {
+			errs = append(errs, fmt.Errorf("auth.jwt_expires_in_seconds is invalid"))
+		}
+		// Safety: fail fast in release mode if the secret is still the default.
+		if o.Server != nil && strings.ToLower(strings.TrimSpace(o.Server.Mode)) == "release" &&
+			strings.TrimSpace(o.Auth.JWTSecret) == defaults.DefaultAuthJWTSecret {
+			errs = append(errs, fmt.Errorf("auth.jwt_secret must not be default in release mode"))
+		}
+	}
 	if o.Log != nil {
 		errs = append(errs, o.Log.Validate()...)
 	}
 
-	if o.Amap != nil && o.Amap.TimeoutSeconds < 0 {
-		errs = append(errs, fmt.Errorf("amap.timeout_seconds is invalid"))
-	}
 	if o.MCP.Client.InitializeTimeoutSeconds <= 0 || o.MCP.Client.CallTimeoutSeconds <= 0 {
 		errs = append(errs, fmt.Errorf("mcp client timeout seconds is invalid"))
 	}
 
-	if o.MCP.Servers.Amap.Enabled && strings.ToLower(strings.TrimSpace(o.MCP.Servers.Amap.Transport)) == "stdio" {
+	// This web server requires AMap MCP server to be available.
+	if !o.MCP.Servers.Amap.Enabled {
+		errs = append(errs, fmt.Errorf("mcp.servers.amap.enabled must be true (required by server)"))
+	} else {
+		transport := strings.ToLower(strings.TrimSpace(o.MCP.Servers.Amap.Transport))
+		if transport != "stdio" {
+			errs = append(errs, fmt.Errorf("mcp.servers.amap.transport must be stdio (got %q)", o.MCP.Servers.Amap.Transport))
+		}
 		if strings.TrimSpace(o.MCP.Servers.Amap.Command) == "" {
-			// Not required for cmd/mcp-server itself, but required when we run stdio child process.
-			// Keep it strict at options level for now.
-			errs = append(errs, fmt.Errorf("mcp.servers.amap.command is required when enabled stdio"))
+			errs = append(errs, fmt.Errorf("mcp.servers.amap.command is required"))
 		}
 		if strings.TrimSpace(o.MCP.Servers.Amap.ConfigFile) == "" {
-			errs = append(errs, fmt.Errorf("mcp.servers.amap.config_file is required when enabled stdio"))
+			errs = append(errs, fmt.Errorf("mcp.servers.amap.config_file is required"))
 		}
 	}
 

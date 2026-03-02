@@ -1,0 +1,274 @@
+openapi: 3.1.0
+info:
+  title: food-agent
+  description: food-agent web server API (M0/M1)
+  version: 0.1.0
+servers:
+  - url: http://127.0.0.1:8080
+tags:
+  - name: 探活
+  - name: 认证
+paths:
+  /api/v1/ping:
+    get:
+      summary: Ping
+      deprecated: false
+      description: 探活接口
+      operationId: ping
+      tags:
+        - 探活
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+              example:
+                api_version: v1
+                code: 200
+                message: success
+                data:
+                  message: pong
+          headers: {}
+          x-apifox-name: 成功
+          x-apifox-ordering: 0
+      security: []
+      x-apifox-folder: 探活
+      x-apifox-status: released
+
+  /api/v1/healthz:
+    get:
+      summary: Healthz
+      deprecated: false
+      description: 健康检查
+      operationId: healthz
+      tags:
+        - 探活
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+              example:
+                api_version: v1
+                code: 200
+                message: success
+                data:
+                  status: ok
+          headers: {}
+          x-apifox-name: 成功
+          x-apifox-ordering: 0
+      security: []
+      x-apifox-folder: 探活
+      x-apifox-status: released
+
+  /api/v1/readyz:
+    get:
+      summary: Readyz
+      deprecated: false
+      description: 就绪检查
+      operationId: readyz
+      tags:
+        - 探活
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+              example:
+                api_version: v1
+                code: 200
+                message: success
+                data:
+                  status: ok
+          headers: {}
+          x-apifox-name: 成功
+          x-apifox-ordering: 0
+      security: []
+      x-apifox-folder: 探活
+      x-apifox-status: released
+
+  /api/v1/auth/register:
+    post:
+      summary: Register
+      deprecated: false
+      description: 用户注册（用户名仅允许英文/数字/下划线；密码强度至少 Moderate）
+      operationId: authRegister
+      tags:
+        - 认证
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              username: test_user
+              password: Abcd1234!
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+              example:
+                api_version: v1
+                code: 200
+                message: success
+                data:
+                  id: 1
+                  username: test_user
+          headers: {}
+          x-apifox-name: 成功
+          x-apifox-ordering: 0
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+          headers: {}
+          x-apifox-name: 参数错误
+          x-apifox-ordering: 1
+      security: []
+      x-apifox-folder: 认证
+      x-apifox-status: released
+
+  /api/v1/auth/login:
+    post:
+      summary: Login
+      deprecated: false
+      description: 用户登录，返回 JWT token
+      operationId: authLogin
+      tags:
+        - 认证
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              username: test_user
+              password: Abcd1234!
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+              example:
+                api_version: v1
+                code: 200
+                message: success
+                data:
+                  token: "<jwt>"
+                  expires_in_seconds: 86400
+                  user:
+                    id: 1
+                    username: test_user
+          headers: {}
+          x-apifox-name: 成功
+          x-apifox-ordering: 0
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+          headers: {}
+          x-apifox-name: 未授权
+          x-apifox-ordering: 1
+      security: []
+      x-apifox-folder: 认证
+      x-apifox-status: released
+
+  /api/v1/me:
+    get:
+      summary: Me
+      deprecated: false
+      description: 获取当前登录用户信息，需要在 Authorization header 中提供 Bearer token
+      operationId: me
+      tags:
+        - 认证
+      parameters:
+        - name: Authorization
+          in: header
+          description: Bearer token
+          example: Bearer <token>
+          schema:
+            type: string
+            default: Bearer <token>
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+              example:
+                api_version: v1
+                code: 200
+                message: success
+                data:
+                  id: 1
+                  username: test_user
+          headers: {}
+          x-apifox-name: 成功
+          x-apifox-ordering: 0
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+          headers: {}
+          x-apifox-name: 未授权
+          x-apifox-ordering: 1
+      security: []
+      x-apifox-folder: 认证
+      x-apifox-status: released
+
+components:
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        api_version:
+          type: string
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          nullable: true
+      required:
+        - api_version
+        - code
+        - message
+    RegisterRequest:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required:
+        - username
+        - password
+    LoginRequest:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required:
+        - username
+        - password
+

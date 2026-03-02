@@ -2,7 +2,14 @@ server:
   bind_address: "0.0.0.0"
   port: 8080
   # gin mode: debug/release/test
-  mode: release
+  mode: debug
+
+# Auth/JWT 配置：用于登录鉴权。
+# 注意：当 server.mode=release 时，如果 jwt_secret 仍是默认值（change-me），server 将启动失败。
+auth:
+  jwt_secret: "change-me"
+  jwt_expires_in_seconds: 86400
+  issuer: "food-agent"
 
 data:
   database:
@@ -45,12 +52,6 @@ llm:
   timeout_seconds: 60
   max_retries: 2
 
-# 高德地图（Gaode/AMap）开放平台配置：用于本项目内置的 AMap SDK（以及 AMap MCP server）。
-amap:
-  key: ""
-  base_url: "https://restapi.amap.com/v3"
-  timeout_seconds: 5
-
 mcp:
   client:
     initialize_timeout_seconds: 5
@@ -58,13 +59,13 @@ mcp:
   # 通用 MCP server 定义（当前 internal/mcp 只实现 stdio transport）。
   servers:
     amap:
-      # enabled=true 时要求 command 非空（用于启动 MCP server 子进程）。
-      enabled: false
+      # 本项目 web server 强制依赖 AMap MCP server：enabled 必须为 true。
+      enabled: true
       transport: stdio
       # stdio 模式：command/args 用于启动 MCP server 子进程
       # 开发阶段可以用：command: "go" args: ["run","./cmd/mcp-server"]
-      command: ""
-      args: []
+      command: "go"
+      args: ["run","./cmd/mcp-server"]
       # 启动子进程时的工作目录（可选）。当 command/args 使用相对路径时会更稳。
       work_dir: ""
       # MCP server 独立配置文件（强烈建议放 AMap key 等敏感信息）。

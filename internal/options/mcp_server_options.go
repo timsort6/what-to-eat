@@ -70,7 +70,7 @@ func (o *MCPServerRunOptions) Complete(cmd *cobra.Command, defaultConfigFile str
 		if err != nil {
 			return fmt.Errorf("read config file %q: %w", cfgPath, err)
 		}
-		var cfg config.Config
+		var cfg config.MCPServerAppConfig
 		if err := config.UnmarshalYAML(raw, &cfg); err != nil {
 			return fmt.Errorf("parse config yaml %q: %w", cfgPath, err)
 		}

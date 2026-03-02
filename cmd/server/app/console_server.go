@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"food-agent/internal/apis/auth"
 	"food-agent/internal/apis/helper"
 	"food-agent/internal/mcp"
 	"food-agent/internal/options"
-	"food-agent/pkg/client/amap"
 	"food-agent/pkg/client/cache"
 	dbmysql "food-agent/pkg/client/db/mysql"
 	dbpgsql "food-agent/pkg/client/db/pgsql"
@@ -19,9 +19,11 @@ import (
 	"food-agent/pkg/logger"
 	"food-agent/pkg/model"
 	"food-agent/pkg/server"
+	"food-agent/pkg/token"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -39,7 +41,7 @@ type ConsoleServer struct {
 	DB    *gorm.DB
 	Cache cache.Interface
 	LLM   *llm.Client
-	Amap  *amap.Client
+	Token token.Manager
 
 	// Optional MCP clients (subprocess + stdio).
 	AmapMCP *mcp.StdioClient
@@ -75,7 +77,10 @@ func (s *ConsoleServer) Prepare(ctx context.Context) error {
 		return err
 	}
 
-	s.registerRoutes()
+	if err := s.registerRoutes(); err != nil {
+		s.closeAll(context.Background())
+		return err
+	}
 	s.initHTTPServer()
 	return nil
 }
@@ -143,11 +148,21 @@ func (s *ConsoleServer) initRouter() {
 	s.Router = r
 }
 
-func (s *ConsoleServer) registerRoutes() {
+func (s *ConsoleServer) registerRoutes() error {
 	v1 := s.Router.Group("/api/v1")
 	helper.RegisterRoutes(v1)
 
-	// TODO: user/login/favorite/recommend routes will be wired here later.
+	// Auth routes.
+	if err := auth.RegisterRoutes(v1, auth.Deps{
+		Users:             auth.NewDAOStore(s.DB),
+		Tokens:            s.Token,
+		JWTExpiresSeconds: s.Opts.Auth.JWTExpiresInSeconds,
+	}); err != nil {
+		return err
+	}
+
+	// TODO: favorite/recommend routes will be wired here later.
+	return nil
 }
 
 func (s *ConsoleServer) initHTTPServer() {
@@ -212,23 +227,6 @@ func (s *ConsoleServer) initClients(ctx context.Context) error {
 		s.Cache = cache.NewSimpleCache()
 	}
 
-	// AMap SDK (used by web server for address -> location, etc.).
-	if s.Opts.Amap == nil {
-		return fmt.Errorf("amap options is nil")
-	}
-	amapKey := strings.TrimSpace(s.Opts.Amap.Key)
-	amapBaseURL := strings.TrimSpace(s.Opts.Amap.BaseURL)
-	amapTimeout := time.Duration(s.Opts.Amap.TimeoutSeconds) * time.Second
-	// AMap key may live in the MCP server config (independent). If key is empty,
-	// keep the SDK client nil so the web server can still start.
-	if amapKey != "" {
-		s.Amap = amap.NewClient(
-			amapKey,
-			amap.WithBaseURL(amapBaseURL),
-			amap.WithTimeout(amapTimeout),
-		)
-	}
-
 	// LLM (Eino) init: build ChatModel config.
 	if s.Opts.LLM == nil {
 		return fmt.Errorf("llm options is nil")
@@ -239,11 +237,19 @@ func (s *ConsoleServer) initClients(ctx context.Context) error {
 	}
 	s.LLM = cli
 
-	// Optional MCP: start amap MCP server subprocess and connect via stdio.
-	if s.Opts.MCP.Servers.Amap.Enabled {
-		if err := s.initAmapMCP(ctx); err != nil {
-			return err
-		}
+	// Token manager (JWT)
+	if s.Opts.Auth == nil {
+		return fmt.Errorf("auth options is nil")
+	}
+	s.Token = token.NewJWTTokenManager(
+		[]byte(s.Opts.Auth.JWTSecret),
+		jwt.SigningMethodHS256,
+		token.SetIssuer(s.Opts.Auth.Issuer),
+	)
+
+	// Required MCP: start amap MCP server subprocess and connect via stdio.
+	if err := s.initAmapMCP(ctx); err != nil {
+		return err
 	}
 
 	return nil
@@ -251,6 +257,12 @@ func (s *ConsoleServer) initClients(ctx context.Context) error {
 
 func (s *ConsoleServer) initAmapMCP(ctx context.Context) error {
 	so := s.Opts.MCP.Servers.Amap
+	if !so.Enabled {
+		return fmt.Errorf("mcp.servers.amap.enabled must be true (required by server)")
+	}
+	if strings.ToLower(strings.TrimSpace(so.Transport)) != "stdio" {
+		return fmt.Errorf("mcp.servers.amap.transport must be stdio (required by server)")
+	}
 	if strings.TrimSpace(so.Command) == "" {
 		return fmt.Errorf("mcp.servers.amap.enabled=true but command is empty")
 	}

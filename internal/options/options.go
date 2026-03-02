@@ -3,7 +3,7 @@ package options
 import (
 	"strings"
 
-	"food-agent/pkg/client/amap"
+	"food-agent/pkg/auth"
 	"food-agent/pkg/client/cache"
 	dbmysql "food-agent/pkg/client/db/mysql"
 	dbpgsql "food-agent/pkg/client/db/pgsql"
@@ -26,11 +26,11 @@ type ServerRunOptions struct {
 	// Generic server options used by the web server (bind/port/tls...).
 	Server *serveroptions.ServerRunOptions `mapstructure:"server" yaml:"server"`
 
+	Auth *auth.Options `mapstructure:"auth" yaml:"auth"`
+
 	Data DataOptions `mapstructure:"data" yaml:"data"`
 
 	LLM *llm.Options `mapstructure:"llm" yaml:"llm"`
-
-	Amap *amap.Options `mapstructure:"amap" yaml:"amap"`
 
 	MCP MCPOptions `mapstructure:"mcp" yaml:"mcp"`
 
@@ -83,6 +83,11 @@ func NewServerRunOptions() *ServerRunOptions {
 			serveroptions.WithDefaultPort(defaults.DefaultServerPort),
 			serveroptions.WithDefaultMode(defaults.DefaultServerMode),
 		),
+		Auth: auth.NewOptions(
+			auth.SetDefaultJWTSecret(defaults.DefaultAuthJWTSecret),
+			auth.SetDefaultJWTExpiresInSeconds(defaults.DefaultAuthJWTExpiresInSeconds),
+			auth.SetDefaultIssuer(defaults.DefaultAuthIssuer),
+		),
 		Data: DataOptions{
 			Database: DatabaseOptions{
 				Type: defaults.DefaultDBType,
@@ -117,10 +122,6 @@ func NewServerRunOptions() *ServerRunOptions {
 			llm.SetDefaultTimeoutSeconds(defaults.DefaultLLMTimeoutSeconds),
 			llm.SetDefaultMaxRetries(defaults.DefaultLLMMaxRetries),
 		),
-		Amap: amap.NewOptions(
-			amap.SetDefaultBaseURL(defaults.DefaultAmapBaseURL),
-			amap.SetDefaultTimeoutSeconds(defaults.DefaultAmapTimeoutSeconds),
-		),
 		MCP: MCPOptions{
 			Client: MCPClientOptions{
 				InitializeTimeoutSeconds: defaults.DefaultMCPInitTimeoutSeconds,
@@ -152,6 +153,11 @@ func (o *ServerRunOptions) AddFlags(fs *pflag.FlagSet) {
 	// server.*
 	o.Server.AddFlagsWithPrefix(fs, "server")
 
+	// auth.*
+	if o.Auth != nil {
+		o.Auth.AddFlagsWithPrefix(fs, "auth")
+	}
+
 	// data.database.*
 	fs.StringVar(&o.Data.Database.Type, "data.database.type", o.Data.Database.Type, "database type: pgsql/mysql")
 	o.Data.Database.PgSQL.AddFlagsWithPrefix(fs, "data.database.pgsql")
@@ -162,9 +168,6 @@ func (o *ServerRunOptions) AddFlags(fs *pflag.FlagSet) {
 
 	// llm.*
 	o.LLM.AddFlagsWithPrefix(fs, "llm")
-
-	// amap.*
-	o.Amap.AddFlagsWithPrefix(fs, "amap")
 
 	// mcp.client.*
 	fs.IntVar(&o.MCP.Client.InitializeTimeoutSeconds, "mcp.client.initialize_timeout_seconds", o.MCP.Client.InitializeTimeoutSeconds, "mcp initialize timeout seconds")
@@ -192,6 +195,9 @@ func (o *ServerRunOptions) LoadEnv(envPrefix string, fs *pflag.FlagSet) []error 
 	if o.Server != nil {
 		errs = append(errs, o.Server.LoadEnv(envPrefix, fs, "server")...)
 	}
+	if o.Auth != nil {
+		errs = append(errs, o.Auth.LoadEnv(envPrefix, fs, "auth")...)
+	}
 	// data.database.*
 	if o.Data.Database.PgSQL != nil {
 		errs = append(errs, o.Data.Database.PgSQL.LoadEnv(envPrefix, fs, "data.database.pgsql")...)
@@ -206,10 +212,6 @@ func (o *ServerRunOptions) LoadEnv(envPrefix string, fs *pflag.FlagSet) []error 
 	// llm.*
 	if o.LLM != nil {
 		errs = append(errs, o.LLM.LoadEnv(envPrefix, fs, "llm")...)
-	}
-	// amap.*
-	if o.Amap != nil {
-		errs = append(errs, o.Amap.LoadEnv(envPrefix, fs, "amap")...)
 	}
 	// log.*
 	if o.Log != nil {

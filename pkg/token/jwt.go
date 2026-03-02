@@ -111,6 +111,12 @@ func (jt *jwtToken) keyFunc(t *jwt.Token) (any, error) {
 
 type Option func(o *jwtToken)
 
+func SetIssuer(name string) Option {
+	return func(jt *jwtToken) {
+		jt.name = name
+	}
+}
+
 func SetVerifyKey(verifyKey []byte) Option {
 	return func(jt *jwtToken) {
 		jt.verifyKey = verifyKey
