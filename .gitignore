@@ -1,0 +1,9 @@
+/configs/config.yaml
+/configs/mcp-amap.yaml
+/.gocache/
+/.gomodcache/
+/.idea/
+/.omo/
+/tmp/
+/amap_example
+/web/
