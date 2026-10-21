@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"food-agent/internal/apis/addresses"
+	"food-agent/internal/apis/agentchat"
 	"food-agent/internal/apis/auth"
 	"food-agent/internal/apis/helper"
 	"food-agent/internal/mcp"
@@ -16,6 +18,7 @@ import (
 	dbmysql "food-agent/pkg/client/db/mysql"
 	dbpgsql "food-agent/pkg/client/db/pgsql"
 	"food-agent/pkg/client/llm"
+	"food-agent/pkg/dao"
 	"food-agent/pkg/logger"
 	"food-agent/pkg/model"
 	"food-agent/pkg/server"
@@ -154,9 +157,38 @@ func (s *ConsoleServer) registerRoutes() error {
 
 	// Auth routes.
 	if err := auth.RegisterRoutes(v1, auth.Deps{
-		Users:             auth.NewDAOStore(s.DB),
+		Users:             dao.NewUserDAO(s.DB),
 		Tokens:            s.Token,
 		JWTExpiresSeconds: s.Opts.Auth.JWTExpiresInSeconds,
+	}); err != nil {
+		return err
+	}
+
+	// Addresses CRUD (favorite/common addresses).
+	addrSvc, err := addresses.NewService(s.DB)
+	if err != nil {
+		return err
+	}
+	if err := addresses.RegisterRoutes(v1, addresses.Deps{
+		Service: addrSvc,
+		Tokens:  s.Token,
+	}); err != nil {
+		return err
+	}
+
+	// Agent chat (SSE streaming).
+	chatSvc, err := agentchat.NewService(agentchat.Deps{
+		LLM:                   s.LLM.ChatModel,
+		MCP:                   s.AmapMCP,
+		Addresses:             dao.NewUserFavoriteAddressDAO(s.DB),
+		MCPCallTimeoutSeconds: s.Opts.MCP.Client.CallTimeoutSeconds,
+	})
+	if err != nil {
+		return err
+	}
+	if err := agentchat.RegisterRoutes(v1, agentchat.RouterDeps{
+		Service: chatSvc,
+		Tokens:  s.Token,
 	}); err != nil {
 		return err
 	}
@@ -168,10 +200,13 @@ func (s *ConsoleServer) registerRoutes() error {
 func (s *ConsoleServer) initHTTPServer() {
 	addr := fmt.Sprintf("%s:%d", s.Opts.Server.BindAddress, s.Opts.Server.Port)
 	s.HTTP = &http.Server{
-		Addr:         addr,
-		Handler:      s.Router,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Addr:        addr,
+		Handler:     s.Router,
+		ReadTimeout: 30 * time.Second,
+		// Disable WriteTimeout for SSE streaming endpoints (e.g. /api/v1/agent/chat),
+		// otherwise the connection may be closed mid-stream, causing clients to see
+		// "unexpected EOF".
+		WriteTimeout: 0,
 	}
 }
 
