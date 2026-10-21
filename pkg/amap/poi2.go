@@ -151,6 +151,48 @@ func (p *POI2POI) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func (p POI2POI) MarshalJSON() ([]byte, error) {
+	// Merge known fields and Extra to preserve as much of the original POI fields as possible.
+	// This is important for downstream "raw" passthrough (e.g. MCP -> web server -> frontend).
+	m := map[string]any{}
+
+	// Extra first (unknown fields).
+	for k, v := range p.Extra {
+		// Keep raw JSON to preserve original types.
+		m[k] = json.RawMessage(v)
+	}
+
+	// Known fields (strings).
+	m["id"] = p.ID
+	m["name"] = p.Name
+	m["location"] = p.Location
+	m["distance"] = p.Distance
+	m["type"] = p.Type
+	m["typecode"] = p.Typecode
+	m["pname"] = p.Pname
+	m["cityname"] = p.Cityname
+	m["adname"] = p.Adname
+	m["address"] = p.Address
+	m["pcode"] = p.Pcode
+	m["adcode"] = p.Adcode
+	m["citycode"] = p.Citycode
+	m["tel"] = p.Tel
+	m["tag"] = p.Tag
+	m["rating"] = p.Rating
+	m["cost"] = p.Cost
+	m["parking_type"] = p.ParkingType
+	m["alias"] = p.Alias
+	m["keytag"] = p.Keytag
+	m["rectag"] = p.Rectag
+	m["entr_location"] = p.EntrLocation
+	m["exit_location"] = p.ExitLocation
+	m["gridcode"] = p.Gridcode
+	m["opentime_today"] = p.OpentimeToday
+	m["opentime_week"] = p.OpentimeWeek
+
+	return json.Marshal(m)
+}
+
 // Text searches POIs by keywords/types: v5 /place/text.
 func (s *POI2Service) Text(ctx context.Context, req *POI2TextRequest) (*POI2TextResponse, error) {
 	if req == nil {

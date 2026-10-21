@@ -18,13 +18,21 @@ import (
 // - 该实现只覆盖当前阶段需要的最小能力（initialize / tools/list / tools/call）。
 // - 未来可以扩展为连接多个 server、支持 resources 等。
 type StdioClient struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
+	opts    StdioClientOptions
+	process *stdioProcess
+	callMu  chan struct{}
+	stateMu sync.Mutex
+	closed  bool
+	nextID  int64
+}
 
-	mu     sync.Mutex
-	callMu sync.Mutex
-	nextID int64
+type stdioProcess struct {
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	stdout  *bufio.Reader
+	output  io.ReadCloser
+	done    chan struct{}
+	waitErr error
 }
 
 type StdioClientOptions struct {
@@ -41,45 +49,14 @@ func NewStdioClient(ctx context.Context, opts StdioClientOptions) (*StdioClient,
 		return nil, fmt.Errorf("mcp stdio client: empty command")
 	}
 
-	cmd := exec.CommandContext(ctx, opts.Command, opts.Args...)
-	if opts.WorkDir != "" {
-		cmd.Dir = opts.WorkDir
-	}
-	cmd.Stderr = os.Stderr
-
-	// 继承环境变量，并追加自定义 env。
-	cmd.Env = os.Environ()
-	for k, v := range opts.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("mcp stdio client: stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		return nil, fmt.Errorf("mcp stdio client: stdout pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
-		return nil, fmt.Errorf("mcp stdio client: start: %w", err)
-	}
-
 	c := &StdioClient{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdout),
+		opts:   opts,
+		callMu: make(chan struct{}, 1),
 		nextID: 1,
 	}
+	c.callMu <- struct{}{}
 
-	// 最小握手：initialize
-	initCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := c.initialize(initCtx); err != nil {
-		_ = c.Close()
+	if err := c.call(ctx, "initialize", nil, nil); err != nil {
 		return nil, err
 	}
 
@@ -87,27 +64,65 @@ func NewStdioClient(ctx context.Context, opts StdioClientOptions) (*StdioClient,
 }
 
 func (c *StdioClient) Close() error {
-	// 尝试优雅结束子进程；如已退出则忽略错误。
-	if c.stdin != nil {
-		_ = c.stdin.Close()
-	}
-	if c.cmd == nil || c.cmd.Process == nil {
+	if c.callMu == nil {
 		return nil
 	}
+	c.stateMu.Lock()
+	c.closed = true
+	process := c.process
+	c.stateMu.Unlock()
+	if process != nil {
+		_ = process.stdin.Close()
+		select {
+		case <-process.done:
+		case <-time.After(2 * time.Second):
+			_ = process.cmd.Process.Kill()
+			<-process.done
+		}
+		_ = process.output.Close()
+	}
+	<-c.callMu
+	defer func() { c.callMu <- struct{}{} }()
+	if process != nil {
+		return process.waitErr
+	}
+	return nil
+}
 
-	done := make(chan error, 1)
+func (c *StdioClient) startProcess() (*stdioProcess, error) {
+	cmd := exec.Command(c.opts.Command, c.opts.Args...)
+	if c.opts.WorkDir != "" {
+		cmd.Dir = c.opts.WorkDir
+	}
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	for key, value := range c.opts.Env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("mcp stdio client: stdin pipe: %w", err)
+	}
+	stdout, output, err := os.Pipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, fmt.Errorf("mcp stdio client: stdout pipe: %w", err)
+	}
+	cmd.Stdout = output
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = output.Close()
+		return nil, fmt.Errorf("mcp stdio client: start: %w", err)
+	}
+	_ = output.Close()
+	process := &stdioProcess{cmd: cmd, stdin: stdin, stdout: bufio.NewReader(stdout), output: stdout, done: make(chan struct{})}
+	// stdout 管道由本代持有，Wait 回收进程时不会提前关闭尚未读完的响应。
 	go func() {
-		done <- c.cmd.Wait()
+		process.waitErr = cmd.Wait()
+		close(process.done)
 	}()
-
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(2 * time.Second):
-		_ = c.cmd.Process.Kill()
-		<-done
-		return nil
-	}
+	return process, nil
 }
 
 func (c *StdioClient) ListTools(ctx context.Context) (ToolsListResult, error) {
@@ -144,27 +159,84 @@ func (c *StdioClient) CallToolText(ctx context.Context, name string, arguments m
 	return "", nil
 }
 
-func (c *StdioClient) initialize(ctx context.Context) error {
-	// MCP initialize 的 params 在不同实现中可能略有差异，这里使用最小字段，保持兼容。
-	params := map[string]any{
-		"clientInfo": map[string]any{
-			"name":    "food-agent",
-			"version": "0.0.1",
-		},
-	}
-	var ignore any
-	return c.call(ctx, "initialize", params, &ignore)
-}
-
 func (c *StdioClient) call(ctx context.Context, method string, params any, result any) error {
 	// 串行化调用，避免并发下读写乱序。
-	c.callMu.Lock()
-	defer c.callMu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.callMu:
+	}
+	defer func() { c.callMu <- struct{}{} }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.stateMu.Lock()
+	if c.closed {
+		c.stateMu.Unlock()
+		return fmt.Errorf("mcp client is closed")
+	}
+	process := c.process
+	if process == nil {
+		var err error
+		process, err = c.startProcess()
+		c.process = process
+		c.stateMu.Unlock()
+		if err != nil {
+			return err
+		}
+		initCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := c.exchange(initCtx, process, "initialize", map[string]any{
+			"clientInfo": map[string]any{"name": "food-agent", "version": "0.0.1"},
+		}, nil); err != nil {
+			c.discard(process)
+			return err
+		}
+	} else {
+		c.stateMu.Unlock()
+	}
+	if method == "initialize" {
+		return nil
+	}
+	return c.exchange(ctx, process, method, params, result)
+}
 
-	c.mu.Lock()
+func (c *StdioClient) discard(process *stdioProcess) {
+	c.stateMu.Lock()
+	if c.process == process {
+		c.process = nil
+	}
+	c.stateMu.Unlock()
+	_ = process.cmd.Process.Kill()
+	_ = process.stdin.Close()
+	_ = process.output.Close()
+	<-process.done
+}
+
+func (c *StdioClient) exchange(ctx context.Context, process *stdioProcess, method string, params any, result any) (err error) {
+	watchStop := make(chan struct{})
+	watchExited := make(chan struct{})
+	go func() {
+		defer close(watchExited)
+		select {
+		case <-ctx.Done():
+			_ = process.cmd.Process.Kill()
+			_ = process.stdin.Close()
+			_ = process.output.Close()
+		case <-watchStop:
+		}
+	}()
+	defer func() {
+		close(watchStop)
+		<-watchExited
+		if ctx.Err() != nil {
+			c.discard(process)
+			err = ctx.Err()
+		}
+	}()
+
 	id := c.nextID
 	c.nextID++
-	c.mu.Unlock()
 
 	req := jsonRPCRequest{
 		JSONRPC: "2.0",
@@ -173,14 +245,20 @@ func (c *StdioClient) call(ctx context.Context, method string, params any, resul
 		Params:  params,
 	}
 
-	if err := writeMessage(c.stdin, req); err != nil {
+	if err := writeMessage(process.stdin, req); err != nil {
+		c.discard(process)
 		return fmt.Errorf("mcp write request: %w", err)
 	}
 
 	// 读取响应（简单实现：串行调用，按顺序读取一条响应即可）。
-	raw, err := readMessage(c.stdout)
+	raw, err := readMessage(process.stdout)
 	if err != nil {
+		c.discard(process)
 		return fmt.Errorf("mcp read response: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		c.discard(process)
+		return err
 	}
 
 	var resp jsonRPCResponse
