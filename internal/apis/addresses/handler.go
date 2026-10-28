@@ -156,8 +156,11 @@ func mapServiceErr(err error) error {
 	if errors.Is(err, ErrPermissionDenied) {
 		return errutil.ErrPermissionDenied
 	}
-	// Map validation-ish errors to 400.
 	msg := strings.TrimSpace(err.Error())
+	if errors.Is(err, ErrFieldTooLong) {
+		return errutil.NewError(http.StatusBadRequest, msg)
+	}
+	// Map validation-ish errors to 400.
 	if strings.Contains(msg, "location") || strings.Contains(msg, "label") || strings.Contains(msg, "lng") || strings.Contains(msg, "lat") {
 		return errutil.NewError(http.StatusBadRequest, msg)
 	}

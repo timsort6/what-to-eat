@@ -53,6 +53,7 @@ func (o *ServerRunOptions) Complete(cmd *cobra.Command, defaultConfigFile string
 
 	// Keep ConfigFile resolved for later (logs/debug).
 	o.ConfigFile = cfgPath
+	o.Agent.PromptFile = resolvePromptPath(cfgPath, o.Agent.PromptFile)
 
 	// Final validation should be done on the fully-resolved options.
 	if errs := o.Validate(); len(errs) > 0 {

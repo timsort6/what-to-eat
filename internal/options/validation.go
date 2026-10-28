@@ -3,8 +3,11 @@ package options
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"food-agent/internal/agent"
 	"food-agent/pkg/defaults"
 )
 
@@ -65,6 +68,24 @@ func (o *ServerRunOptions) Validate() []error {
 	if o.MCP.Client.InitializeTimeoutSeconds <= 0 || o.MCP.Client.CallTimeoutSeconds <= 0 {
 		errs = append(errs, fmt.Errorf("mcp client timeout seconds is invalid"))
 	}
+	if o.Agent.MaxSteps <= 0 || o.Agent.MaxModelCalls <= 0 || o.Agent.MaxToolCalls <= 0 || o.Agent.TimeoutSeconds <= 0 ||
+		o.Agent.MaxModelCalls > o.Agent.MaxSteps || o.Agent.MaxToolCalls > o.Agent.MaxSteps {
+		errs = append(errs, fmt.Errorf("agent call budgets and timeout are invalid"))
+	}
+	if len(o.Agent.AllowedTools) == 0 {
+		errs = append(errs, fmt.Errorf("agent.allowed_tools must not be empty"))
+	}
+	for _, name := range o.Agent.AllowedTools {
+		if name != agent.ToolNamePOI2Around && name != agent.ToolNamePOI2Text {
+			errs = append(errs, fmt.Errorf("agent.allowed_tools contains unknown tool %q", name))
+		}
+	}
+	prompt, err := os.ReadFile(o.Agent.PromptFile)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("read agent prompt %q: %w", o.Agent.PromptFile, err))
+	} else if strings.TrimSpace(string(prompt)) == "" {
+		errs = append(errs, fmt.Errorf("agent.prompt_file %q is empty", o.Agent.PromptFile))
+	}
 
 	// This web server requires AMap MCP server to be available.
 	if !o.MCP.Servers.Amap.Enabled {
@@ -83,6 +104,13 @@ func (o *ServerRunOptions) Validate() []error {
 	}
 
 	return errs
+}
+
+func resolvePromptPath(configPath, promptPath string) string {
+	if filepath.IsAbs(promptPath) {
+		return filepath.Clean(promptPath)
+	}
+	return filepath.Join(filepath.Dir(configPath), promptPath)
 }
 
 func joinErrors(errs []error) error {

@@ -13,6 +13,7 @@ const (
 	keyAPIKey         = "api_key"
 	keyBaseURL        = "base_url"
 	keyModel          = "model"
+	keyDecisionModel  = "decision_model"
 	keyLanguage       = "language"
 	keyTimeoutSeconds = "timeout_seconds"
 	keyMaxRetries     = "max_retries"
@@ -54,6 +55,9 @@ type Options struct {
 	// Model 是模型名称（例如 gpt-4o-mini / deepseek-chat / qwen-max）。
 	// 环境变量：AI_MODEL
 	Model string `mapstructure:"model" yaml:"model"`
+	// DecisionModel 是可选的决策阶段模型（如推理模型）；为空时所有阶段都用 Model。同 BaseURL/APIKey。
+	// 环境变量：AI_DECISION_MODEL
+	DecisionModel string `mapstructure:"decision_model" yaml:"decision_model"`
 	// Language 是一个“偏好语言”提示（例如 zh/en），方便上层在 prompt 模板中使用。
 	// 环境变量：AI_LANGUAGE
 	Language string `mapstructure:"language" yaml:"language"`
@@ -62,7 +66,7 @@ type Options struct {
 	// 环境变量：AI_TIMEOUT_SECONDS
 	TimeoutSeconds int `mapstructure:"timeout_seconds" yaml:"timeout_seconds"`
 
-	// MaxRetries 是重试次数（实际是否生效取决于底层组件的实现）。
+	// MaxRetries 当前未接入：eino-ext openai v0.1.7 的 ChatModelConfig 没有重试字段，底层不自动重试；保留字段仅为配置兼容。
 	// 环境变量：AI_MAX_RETRIES
 	MaxRetries int `mapstructure:"max_retries" yaml:"max_retries"`
 }
@@ -111,6 +115,7 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.APIKey, "ai-api-key", o.APIKey, "OpenAI-compatible API key")
 	fs.StringVar(&o.BaseURL, "ai-base-url", o.BaseURL, "OpenAI-compatible base URL")
 	fs.StringVar(&o.Model, "ai-model", o.Model, "Remote model name")
+	fs.StringVar(&o.DecisionModel, "ai-decision-model", o.DecisionModel, "Optional decision-stage model name (empty = use model)")
 	fs.StringVar(&o.Language, "ai-language", o.Language, "Preferred language hint (zh/en)")
 	fs.IntVar(&o.TimeoutSeconds, "ai-timeout-seconds", o.TimeoutSeconds, "HTTP timeout in seconds")
 	fs.IntVar(&o.MaxRetries, "ai-max-retries", o.MaxRetries, "Max retries for transient failures")
@@ -124,6 +129,7 @@ func (o *Options) AddFlagsWithPrefix(fs *pflag.FlagSet, prefix string) {
 	fs.StringVar(&o.APIKey, p+keyAPIKey, o.APIKey, "OpenAI-compatible API key")
 	fs.StringVar(&o.BaseURL, p+keyBaseURL, o.BaseURL, "OpenAI-compatible base URL")
 	fs.StringVar(&o.Model, p+keyModel, o.Model, "Remote model name")
+	fs.StringVar(&o.DecisionModel, p+keyDecisionModel, o.DecisionModel, "Optional decision-stage model name (empty = use model)")
 	fs.StringVar(&o.Language, p+keyLanguage, o.Language, "Preferred language hint (zh/en)")
 	fs.IntVar(&o.TimeoutSeconds, p+keyTimeoutSeconds, o.TimeoutSeconds, "HTTP timeout in seconds")
 	fs.IntVar(&o.MaxRetries, p+keyMaxRetries, o.MaxRetries, "Max retries for transient failures")
@@ -146,6 +152,7 @@ func (o *Options) LoadEnv(envPrefix string, fs *pflag.FlagSet, flagPrefix string
 	apiKeyFlag := "ai-api-key"
 	baseURLFlag := "ai-base-url"
 	modelFlag := "ai-model"
+	decisionFlag := "ai-decision-model"
 	langFlag := "ai-language"
 	timeoutFlag := "ai-timeout-seconds"
 	retriesFlag := "ai-max-retries"
@@ -153,6 +160,7 @@ func (o *Options) LoadEnv(envPrefix string, fs *pflag.FlagSet, flagPrefix string
 		apiKeyFlag = flagPrefix + "." + keyAPIKey
 		baseURLFlag = flagPrefix + "." + keyBaseURL
 		modelFlag = flagPrefix + "." + keyModel
+		decisionFlag = flagPrefix + "." + keyDecisionModel
 		langFlag = flagPrefix + "." + keyLanguage
 		timeoutFlag = flagPrefix + "." + keyTimeoutSeconds
 		retriesFlag = flagPrefix + "." + keyMaxRetries
@@ -166,6 +174,9 @@ func (o *Options) LoadEnv(envPrefix string, fs *pflag.FlagSet, flagPrefix string
 	}
 	if v, ok := os.LookupEnv(envPrefix + "_AI_MODEL"); ok && !flagChanged(fs, modelFlag) {
 		o.Model = v
+	}
+	if v, ok := os.LookupEnv(envPrefix + "_AI_DECISION_MODEL"); ok && !flagChanged(fs, decisionFlag) {
+		o.DecisionModel = strings.TrimSpace(v)
 	}
 	if v, ok := os.LookupEnv(envPrefix + "_AI_LANGUAGE"); ok && !flagChanged(fs, langFlag) {
 		o.Language = v

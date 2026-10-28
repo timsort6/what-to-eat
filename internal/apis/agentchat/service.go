@@ -2,25 +2,21 @@ package agentchat
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
+	"food-agent/internal/agent"
+	"food-agent/pkg/config"
 	"food-agent/pkg/model"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"gorm.io/gorm"
 )
-
-type ChatModel interface {
-	Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error)
-}
 
 type FavoriteAddressDAO interface {
 	GetByID(ctx context.Context, id uint) (*model.UserFavoriteAddress, error)
@@ -31,25 +27,29 @@ type AmapMCP interface {
 }
 
 var (
-	errInvalidInput = errors.New("invalid input")
+	errInvalidInput    = errors.New("invalid input")
+	errMissingDecision = errors.New("stream produced output without validated decision")
 )
 
 type Service struct {
-	llm ChatModel
-	mcp AmapMCP
+	llm         einomodel.BaseChatModel
+	decisionLLM einomodel.BaseChatModel
+	mcp         AmapMCP
+	prompt      string
+	budgets     config.AgentConfig
 
 	addresses FavoriteAddressDAO
-
-	mcpCallTimeoutSeconds int
 }
 
 type Deps struct {
-	LLM ChatModel
-	MCP AmapMCP
+	LLM einomodel.BaseChatModel
+	// DecisionLLM 可选：仅用于决策阶段；为 nil 时所有阶段使用 LLM。
+	DecisionLLM einomodel.BaseChatModel
+	MCP         AmapMCP
+	Prompt      string
+	Budgets     config.AgentConfig
 
 	Addresses FavoriteAddressDAO
-
-	MCPCallTimeoutSeconds int
 }
 
 func NewService(d Deps) (*Service, error) {
@@ -62,27 +62,33 @@ func NewService(d Deps) (*Service, error) {
 	if d.Addresses == nil {
 		return nil, errors.New("nil addresses dao")
 	}
-	if d.MCPCallTimeoutSeconds <= 0 {
-		return nil, errors.New("invalid mcp call timeout seconds")
-	}
 	return &Service{
-		llm:                   d.LLM,
-		mcp:                   d.MCP,
-		addresses:             d.Addresses,
-		mcpCallTimeoutSeconds: d.MCPCallTimeoutSeconds,
+		llm:         d.LLM,
+		decisionLLM: d.DecisionLLM,
+		mcp:         d.MCP,
+		prompt:      d.Prompt,
+		budgets:     d.Budgets,
+		addresses:   d.Addresses,
 	}, nil
 }
 
 type Prepared struct {
 	Location      string
 	UsedAddressID *uint
-	Places        []Place
+	userID        uint
 
-	ModelInput []*schema.Message
+	ModelInput  []*schema.Message
+	Preferences agent.Preferences
+	// Selection 仅用于请求校验（见 ChatRequest.NormalizePreferences）；按计划每次以 Preferences 重新检索，不信任旧候选。
+	Selection *agent.RecommendationSelection
 }
 
 func (s *Service) Prepare(ctx context.Context, userID uint, req ChatRequest) (*Prepared, error) {
 	if err := validateHistory(req.Messages); err != nil {
+		return nil, err
+	}
+	preferences, err := req.NormalizePreferences()
+	if err != nil {
 		return nil, err
 	}
 
@@ -91,21 +97,15 @@ func (s *Service) Prepare(ctx context.Context, userID uint, req ChatRequest) (*P
 		return nil, err
 	}
 
-	places, err := s.searchPlaces(ctx, loc, req)
-	if err != nil {
-		return nil, err
-	}
-
-	msgs, err := buildModelInput(req.Messages, loc, places)
-	if err != nil {
-		return nil, err
-	}
+	msgs := buildModelInput(req.Messages)
 
 	return &Prepared{
 		Location:      loc,
 		UsedAddressID: usedAddrID,
-		Places:        places,
+		userID:        userID,
 		ModelInput:    msgs,
+		Preferences:   preferences,
+		Selection:     req.Selection,
 	}, nil
 }
 
@@ -130,14 +130,43 @@ func validateHistory(history []ChatMessage) error {
 			return fmt.Errorf("invalid message role: %s: %w", message.Role, errInvalidInput)
 		}
 	}
+	// buildModelInput 会丢弃空白消息；末条用户消息为空白时须拒绝，否则品类引用会回退到更早的用户原话。
+	last := history[len(history)-1]
+	if role := strings.ToLower(strings.TrimSpace(last.Role)); (role == "" || role == "user") && strings.TrimSpace(last.Content) == "" {
+		return fmt.Errorf("invalid messages: latest user message is blank: %w", errInvalidInput)
+	}
 	return nil
 }
 
-func (s *Service) StreamAnswer(ctx context.Context, prepared *Prepared) (*schema.StreamReader[*schema.Message], error) {
+func (s *Service) StreamAnswer(ctx context.Context, prepared *Prepared) (*agent.RunStream, error) {
 	if prepared == nil {
 		return nil, fmt.Errorf("nil prepared")
 	}
-	return s.llm.Stream(ctx, prepared.ModelInput)
+	tools, err := agent.NewFoodTools(agent.FoodToolDeps{
+		MCP: s.mcp,
+		Scope: agent.RequestScope{
+			UserID: prepared.userID, Location: prepared.Location, AddressID: prepared.UsedAddressID,
+		},
+		AllowedTools: s.budgets.AllowedTools,
+		Preferences:  &prepared.Preferences,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create agent tools: %w", err)
+	}
+	runner, err := agent.NewRunner(s.prompt, s.budgets, s.llm, tools)
+	if err != nil {
+		return nil, fmt.Errorf("create agent runner: %w", err)
+	}
+	if s.decisionLLM != nil {
+		if err := runner.SetDecisionModel(s.decisionLLM); err != nil {
+			return nil, fmt.Errorf("create agent runner: %w", err)
+		}
+	}
+	runCtx := agent.WithRequestScope(ctx, agent.RequestScope{
+		UserID: prepared.userID, Location: prepared.Location, AddressID: prepared.UsedAddressID,
+	})
+	runCtx = agent.WithRecommendationPreferences(runCtx, prepared.Preferences)
+	return runner.Stream(runCtx, prepared.ModelInput)
 }
 
 func (s *Service) resolveLocation(ctx context.Context, userID uint, req ChatRequest) (location string, usedAddrID *uint, err error) {
@@ -163,139 +192,20 @@ func (s *Service) resolveLocation(ctx context.Context, userID uint, req ChatRequ
 	if addr.UserID != userID {
 		return "", nil, fmt.Errorf("permission denied")
 	}
-	if strings.TrimSpace(addr.Location) == "" {
-		return "", nil, fmt.Errorf("address location is empty: %w", errInvalidInput)
-	}
-	if _, _, err := parseLocation(addr.Location); err != nil {
+	location = strconv.FormatFloat(addr.Longitude, 'f', -1, 64) + "," + strconv.FormatFloat(addr.Latitude, 'f', -1, 64)
+	if _, _, err := parseLocation(location); err != nil {
 		return "", nil, fmt.Errorf("invalid address location: %w", errInvalidInput)
 	}
 	id := *req.AddressID
-	return strings.TrimSpace(addr.Location), &id, nil
+	return location, &id, nil
 }
 
-func (s *Service) searchPlaces(ctx context.Context, location string, req ChatRequest) ([]Place, error) {
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 10
-	}
-	// POI2 page_size is typically 1-25.
-	if limit > 25 {
-		limit = 25
-	}
-
-	radius := req.Radius
-	if radius <= 0 {
-		radius = 5000
-	}
-	if radius > 50000 {
-		radius = 50000
-	}
-
-	args := map[string]any{
-		"location":  location,
-		"keywords":  strings.TrimSpace(req.Keywords),
-		"types":     strings.TrimSpace(req.Types),
-		"radius":    radius,
-		"sortrule":  strings.TrimSpace(req.SortRule),
-		"region":    strings.TrimSpace(req.Region),
-		"page_size": limit,
-		"page_num":  1,
-	}
-	if args["types"] == "" {
-		args["types"] = "050000"
-	}
-	if args["sortrule"] == "" {
-		args["sortrule"] = "distance"
-	}
-	if req.CityLimit != nil {
-		args["city_limit"] = *req.CityLimit
-	}
-
-	callCtx, cancel := context.WithTimeout(ctx, time.Duration(s.mcpCallTimeoutSeconds)*time.Second)
-	defer cancel()
-	txt, err := s.mcp.CallToolText(callCtx, "amap.poi2_around", args)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Status   string            `json:"status"`
-		Info     string            `json:"info"`
-		Infocode string            `json:"infocode"`
-		Count    string            `json:"count"`
-		Pois     []json.RawMessage `json:"pois"`
-	}
-	if err := json.Unmarshal([]byte(txt), &resp); err != nil {
-		return nil, fmt.Errorf("invalid poi2 response json: %w", err)
-	}
-	if strings.TrimSpace(resp.Status) != "1" {
-		return nil, fmt.Errorf("amap poi2 failed: %s(%s)", strings.TrimSpace(resp.Info), strings.TrimSpace(resp.Infocode))
-	}
-
-	type poiCommon struct {
-		ID       string `json:"id"`
-		Name     string `json:"name"`
-		Location string `json:"location"`
-		Address  string `json:"address"`
-		Distance string `json:"distance"`
-
-		Type     string `json:"type"`
-		TypeCode string `json:"typecode"`
-
-		Pname    string `json:"pname"`
-		Cityname string `json:"cityname"`
-		Adname   string `json:"adname"`
-		Citycode string `json:"citycode"`
-		Adcode   string `json:"adcode"`
-
-		Tel string `json:"tel"`
-		Tag string `json:"tag"`
-	}
-
-	out := make([]Place, 0, minInt(limit, len(resp.Pois)))
-	for _, raw := range resp.Pois {
-		if len(raw) == 0 || !json.Valid(raw) {
-			continue
-		}
-		var c poiCommon
-		_ = json.Unmarshal(raw, &c)
-		out = append(out, Place{
-			ID:       strings.TrimSpace(c.ID),
-			Name:     strings.TrimSpace(c.Name),
-			Location: strings.TrimSpace(c.Location),
-			Address:  strings.TrimSpace(c.Address),
-			Distance: strings.TrimSpace(c.Distance),
-			Type:     strings.TrimSpace(c.Type),
-			TypeCode: strings.TrimSpace(c.TypeCode),
-			Pname:    strings.TrimSpace(c.Pname),
-			Cityname: strings.TrimSpace(c.Cityname),
-			Adname:   strings.TrimSpace(c.Adname),
-			Citycode: strings.TrimSpace(c.Citycode),
-			Adcode:   strings.TrimSpace(c.Adcode),
-			Tel:      strings.TrimSpace(c.Tel),
-			Tag:      strings.TrimSpace(c.Tag),
-			Raw:      raw,
-		})
-		if len(out) >= limit {
-			break
-		}
-	}
-	return out, nil
-}
-
-func buildModelInput(history []ChatMessage, location string, places []Place) ([]*schema.Message, error) {
-	msgs := make([]*schema.Message, 0, len(history)+2)
-
-	// A small system instruction for safety & formatting.
-	msgs = append(msgs, schema.SystemMessage(strings.TrimSpace(fmt.Sprintf(
-		"你是一个美食助手。用户位置为 %s。请基于候选店铺列表给出简洁可执行的推荐（可给出 3-6 家），并说明理由（距离/口味/人均/营业时间等）。不要编造未提供的信息；如果缺字段就不要乱填。",
-		location,
-	))))
-
+func buildModelInput(history []ChatMessage) []*schema.Message {
+	msgs := make([]*schema.Message, 0, len(history))
 	for _, m := range history {
 		role := strings.ToLower(strings.TrimSpace(m.Role))
-		content := strings.TrimSpace(m.Content)
-		if content == "" {
+		content := m.Content
+		if strings.TrimSpace(content) == "" {
 			continue
 		}
 		switch role {
@@ -303,39 +213,9 @@ func buildModelInput(history []ChatMessage, location string, places []Place) ([]
 			msgs = append(msgs, schema.UserMessage(content))
 		case "assistant":
 			msgs = append(msgs, schema.AssistantMessage(content, nil))
-		case "system":
-			return nil, fmt.Errorf("invalid message role: system is not allowed: %w", errInvalidInput)
-		default:
-			return nil, fmt.Errorf("invalid message role: %s: %w", m.Role, errInvalidInput)
 		}
 	}
-
-	// Provide candidate places as compact JSON for the model.
-	type placeForPrompt struct {
-		ID       string `json:"id,omitempty"`
-		Name     string `json:"name,omitempty"`
-		Address  string `json:"address,omitempty"`
-		Location string `json:"location,omitempty"`
-		Distance string `json:"distance,omitempty"`
-		Tel      string `json:"tel,omitempty"`
-		TypeCode string `json:"typecode,omitempty"`
-	}
-	compact := make([]placeForPrompt, 0, len(places))
-	for _, p := range places {
-		compact = append(compact, placeForPrompt{
-			ID:       p.ID,
-			Name:     p.Name,
-			Address:  p.Address,
-			Location: p.Location,
-			Distance: p.Distance,
-			Tel:      p.Tel,
-			TypeCode: p.TypeCode,
-		})
-	}
-	b, _ := json.Marshal(compact)
-	msgs = append(msgs, schema.SystemMessage("候选店铺列表(JSON): "+string(b)))
-
-	return msgs, nil
+	return msgs
 }
 
 func parseLocation(s string) (lng float64, lat float64, err error) {
@@ -359,11 +239,4 @@ func parseLocation(s string) (lng float64, lat float64, err error) {
 		return 0, 0, fmt.Errorf("invalid lat: must be between -90 and 90: %w", errInvalidInput)
 	}
 	return lng, lat, nil
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

@@ -34,6 +34,8 @@ type ServerRunOptions struct {
 
 	MCP MCPOptions `mapstructure:"mcp" yaml:"mcp"`
 
+	Agent AgentOptions `mapstructure:"agent" yaml:"agent"`
+
 	// Logger
 	Log *logger.Options `mapstructure:"log" yaml:"log"`
 }
@@ -139,6 +141,15 @@ func NewServerRunOptions() *ServerRunOptions {
 				},
 			},
 		},
+		Agent: AgentOptions{
+			PromptFile:    "prompts/food-agent.md",
+			AllowedTools:  []string{"amap.poi2_around", "amap.poi2_text"},
+			MaxSteps:      10,
+			MaxModelCalls: 5,
+			MaxToolCalls:  6,
+			// 真实推理模型决策约 20s、端到端约 35s（2026-10-24 诊断），30s 不够。
+			TimeoutSeconds: 90,
+		},
 		Log: logger.NewLoggerOptions(
 			logger.SetDefaultLevel(defaults.DefaultLogLevel),
 			logger.SetDefaultAddStackLevel(defaults.DefaultLogAddStackLevel),
@@ -182,6 +193,13 @@ func (o *ServerRunOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.MCP.Servers.Amap.ConfigFile, "mcp.servers.amap.config_file", o.MCP.Servers.Amap.ConfigFile, "amap mcp server config file (passed via FOOD_AGENT_MCP_CONFIG)")
 	fs.StringToStringVar(&o.MCP.Servers.Amap.Env, "mcp.servers.amap.env", o.MCP.Servers.Amap.Env, "amap mcp server env map, e.g. KEY=VALUE")
 
+	fs.StringVar(&o.Agent.PromptFile, "agent.prompt_file", o.Agent.PromptFile, "agent prompt file path")
+	fs.StringSliceVar(&o.Agent.AllowedTools, "agent.allowed_tools", o.Agent.AllowedTools, "agent allowed tool names")
+	fs.IntVar(&o.Agent.MaxSteps, "agent.max_steps", o.Agent.MaxSteps, "maximum agent steps")
+	fs.IntVar(&o.Agent.MaxModelCalls, "agent.max_model_calls", o.Agent.MaxModelCalls, "maximum model calls")
+	fs.IntVar(&o.Agent.MaxToolCalls, "agent.max_tool_calls", o.Agent.MaxToolCalls, "maximum tool calls")
+	fs.IntVar(&o.Agent.TimeoutSeconds, "agent.timeout_seconds", o.Agent.TimeoutSeconds, "agent timeout seconds")
+
 	// log.*
 	o.Log.AddFlagsWithPrefix(fs, "log")
 }
@@ -213,12 +231,21 @@ func (o *ServerRunOptions) LoadEnv(envPrefix string, fs *pflag.FlagSet) []error 
 	if o.LLM != nil {
 		errs = append(errs, o.LLM.LoadEnv(envPrefix, fs, "llm")...)
 	}
+	errs = append(errs, o.Agent.LoadEnv(envPrefix, fs)...)
 	// log.*
 	if o.Log != nil {
 		errs = append(errs, o.Log.LoadEnv(envPrefix, fs, "log")...)
 	}
 
 	return errs
+}
+
+// EffectiveLLM 返回创建模型用的 llm 配置副本：单次 HTTP 超时取 max(llm.timeout_seconds, agent.timeout_seconds)，
+// 避免 llm 默认 60s 在 agent 90s 预算内提前截断推理模型；整体上限仍由 agent 上下文控制。
+func (o *ServerRunOptions) EffectiveLLM() *llm.Options {
+	effective := *o.LLM
+	effective.TimeoutSeconds = max(effective.TimeoutSeconds, o.Agent.TimeoutSeconds)
+	return &effective
 }
 
 func (o *ServerRunOptions) EffectiveDBType() string {

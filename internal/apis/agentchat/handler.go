@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"food-agent/internal/agent"
 	"food-agent/pkg/server/encoding"
 	"food-agent/pkg/server/errutil"
 	"food-agent/pkg/token"
@@ -47,6 +48,7 @@ func (h *Handler) Chat(c *gin.Context) {
 
 	stream, err := h.svc.StreamAnswer(c.Request.Context(), prep)
 	if err != nil {
+		logStreamError("start", err)
 		encoding.HandleError(c, errutil.ErrInternalServer)
 		return
 	}
@@ -60,6 +62,25 @@ func (h *Handler) Chat(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 
 	var answer strings.Builder
+	var decision *agent.PublicDecision
+	// 决策只在首个 delta 或 done 前发一次；取不到已验证决策则不能输出任何推荐内容。
+	emitDecision := func() bool {
+		if decision != nil {
+			return true
+		}
+		snapshot, ok := stream.Decision()
+		if !ok {
+			return false
+		}
+		decision = &snapshot
+		c.SSEvent("decision", snapshot)
+		return true
+	}
+	failed := func(stage string, err error) bool {
+		logStreamError(stage, err)
+		c.SSEvent("error", gin.H{"message": "The response could not be generated."})
+		return false
+	}
 	c.Stream(func(w io.Writer) bool {
 		// Client gone.
 		select {
@@ -70,27 +91,61 @@ func (h *Handler) Chat(c *gin.Context) {
 
 		chunk, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
+			if c.Request.Context().Err() != nil {
+				return false
+			}
+			if !emitDecision() {
+				return failed("decision", errMissingDecision)
+			}
+			// 与决策同一快照的实际条件：请求品类为空且原话品类被采纳时含该品类。
+			preferences, ok := stream.EffectivePreferences()
+			if !ok {
+				return failed("decision", errMissingDecision)
+			}
+			places := make([]Place, 0, len(stream.Places()))
+			for _, place := range stream.Places() {
+				places = append(places, projectPlace(place))
+			}
 			done := DoneData{
 				AnswerText:    answer.String(),
-				Places:        prep.Places,
-				PlacesCount:   len(prep.Places),
+				Places:        places,
+				PlacesCount:   len(places),
 				Location:      prep.Location,
 				UsedAddressID: prep.UsedAddressID,
+				Status:        decision.Status,
+				Preferences:   preferences,
+				Decision:      *decision,
 			}
 			c.SSEvent("done", done)
 			return false
 		}
 		if err != nil {
-			c.SSEvent("error", gin.H{"message": "The response could not be generated."})
-			return false
+			if c.Request.Context().Err() != nil {
+				return false
+			}
+			return failed("receive", err)
 		}
 
 		if chunk != nil && chunk.Content != "" {
+			if !emitDecision() {
+				return failed("decision", errMissingDecision)
+			}
 			answer.WriteString(chunk.Content)
 			c.SSEvent("delta", gin.H{"text": chunk.Content})
 		}
 		return true
 	})
+}
+
+func projectPlace(source agent.Place) Place {
+	place := Place{ID: source.ID, CandidateKey: source.CandidateKey, Name: source.Name, Location: source.Location,
+		Address: source.Address, Distance: source.Distance, Type: source.Type, TypeCode: source.TypeCode, Pname: source.Pname,
+		Cityname: source.Cityname, Adname: source.Adname, Citycode: source.Citycode, Adcode: source.Adcode, Tag: source.Tag,
+		OpentimeToday: source.OpentimeToday, OpentimeWeek: source.OpentimeWeek, Evaluation: source.Evaluation}
+	if source.Evaluation != nil && source.Evaluation.Price.State != agent.MatchUnknown {
+		place.Cost, place.CostCurrency, place.CostBasis = source.Cost, source.CostCurrency, source.CostBasis
+	}
+	return place
 }
 
 func mustUserID(c *gin.Context) (uint, bool) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -12,16 +13,19 @@ import (
 	"food-agent/internal/apis/agentchat"
 	"food-agent/internal/apis/auth"
 	"food-agent/internal/apis/helper"
+	"food-agent/internal/apis/locations"
 	"food-agent/internal/mcp"
 	"food-agent/internal/options"
 	"food-agent/pkg/client/cache"
 	dbmysql "food-agent/pkg/client/db/mysql"
 	dbpgsql "food-agent/pkg/client/db/pgsql"
 	"food-agent/pkg/client/llm"
+	"food-agent/pkg/config"
 	"food-agent/pkg/dao"
 	"food-agent/pkg/logger"
 	"food-agent/pkg/model"
 	"food-agent/pkg/server"
+	"food-agent/pkg/server/middleware"
 	"food-agent/pkg/token"
 
 	"github.com/gin-contrib/cors"
@@ -163,33 +167,39 @@ func (s *ConsoleServer) registerRoutes() error {
 	}); err != nil {
 		return err
 	}
-
-	// Addresses CRUD (favorite/common addresses).
-	addrSvc, err := addresses.NewService(s.DB)
+	addressService, err := addresses.NewService(s.DB)
 	if err != nil {
 		return err
 	}
-	if err := addresses.RegisterRoutes(v1, addresses.Deps{
-		Service: addrSvc,
-		Tokens:  s.Token,
+	if err := addresses.RegisterRoutes(v1, addresses.Deps{Service: addressService, Tokens: s.Token}); err != nil {
+		return err
+	}
+	locationService, err := locations.NewService(s.AmapMCP)
+	if err != nil {
+		return err
+	}
+	if err := locations.RegisterRoutes(v1, locations.Deps{
+		Service: locationService, Authenticate: middleware.CheckToken(s.Token),
 	}); err != nil {
 		return err
 	}
-
-	// Agent chat (SSE streaming).
-	chatSvc, err := agentchat.NewService(agentchat.Deps{
-		LLM:                   s.LLM.ChatModel,
-		MCP:                   s.AmapMCP,
-		Addresses:             dao.NewUserFavoriteAddressDAO(s.DB),
-		MCPCallTimeoutSeconds: s.Opts.MCP.Client.CallTimeoutSeconds,
+	prompt, err := os.ReadFile(s.Opts.Agent.PromptFile)
+	if err != nil {
+		return fmt.Errorf("read agent prompt: %w", err)
+	}
+	chatService, err := agentchat.NewService(agentchat.Deps{
+		LLM: s.LLM.ChatModel, DecisionLLM: s.LLM.DecisionChatModel, MCP: s.AmapMCP, Prompt: string(prompt),
+		Budgets: config.AgentConfig{
+			AllowedTools: s.Opts.Agent.AllowedTools, MaxSteps: s.Opts.Agent.MaxSteps,
+			MaxModelCalls: s.Opts.Agent.MaxModelCalls, MaxToolCalls: s.Opts.Agent.MaxToolCalls,
+			TimeoutSeconds: s.Opts.Agent.TimeoutSeconds,
+		},
+		Addresses: dao.NewUserFavoriteAddressDAO(s.DB),
 	})
 	if err != nil {
 		return err
 	}
-	if err := agentchat.RegisterRoutes(v1, agentchat.RouterDeps{
-		Service: chatSvc,
-		Tokens:  s.Token,
-	}); err != nil {
+	if err := agentchat.RegisterRoutes(v1, agentchat.RouterDeps{Service: chatService, Tokens: s.Token}); err != nil {
 		return err
 	}
 
@@ -203,9 +213,7 @@ func (s *ConsoleServer) initHTTPServer() {
 		Addr:        addr,
 		Handler:     s.Router,
 		ReadTimeout: 30 * time.Second,
-		// Disable WriteTimeout for SSE streaming endpoints (e.g. /api/v1/agent/chat),
-		// otherwise the connection may be closed mid-stream, causing clients to see
-		// "unexpected EOF".
+		// Disable WriteTimeout for SSE streaming endpoints so streams can complete.
 		WriteTimeout: 0,
 	}
 }
@@ -266,7 +274,7 @@ func (s *ConsoleServer) initClients(ctx context.Context) error {
 	if s.Opts.LLM == nil {
 		return fmt.Errorf("llm options is nil")
 	}
-	cli, err := llm.NewClient(s.Opts.LLM)
+	cli, err := llm.NewClient(s.Opts.EffectiveLLM())
 	if err != nil {
 		return fmt.Errorf("init llm: %w", err)
 	}

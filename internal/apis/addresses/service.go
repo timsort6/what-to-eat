@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"food-agent/pkg/dao"
 	"food-agent/pkg/model"
@@ -20,7 +21,40 @@ import (
 var (
 	ErrNotFound         = errors.New("not found")
 	ErrPermissionDenied = errors.New("permission denied")
+	ErrFieldTooLong     = errors.New("field too long")
 )
+
+// validateLengths 按 pkg/model/user_favorite_address.go 的列宽（字符数）校验已去空白的入库值，
+// 避免写库时 MySQL 严格模式报错成 500 或非严格模式静默截断。
+func validateLengths(a *model.UserFavoriteAddress) error {
+	fields := []struct {
+		name string
+		val  string
+		max  int
+	}{
+		{"label", a.Label, 64},
+		{"amap_id", a.AmapID, 64},
+		{"name", a.Name, 128},
+		{"type", a.Type, 128},
+		{"typecode", a.TypeCode, 64},
+		{"tel", a.Tel, 128},
+		{"tag", a.Tag, 128},
+		{"formatted_address", a.FormattedAddress, 255},
+		{"address", a.Address, 255},
+		{"location", a.Location, 64},
+		{"pname", a.Pname, 64},
+		{"cityname", a.Cityname, 64},
+		{"adname", a.Adname, 64},
+		{"citycode", a.Citycode, 32},
+		{"adcode", a.Adcode, 32},
+	}
+	for _, f := range fields {
+		if utf8.RuneCountInString(f.val) > f.max {
+			return fmt.Errorf("%w: %s (max %d characters)", ErrFieldTooLong, f.name, f.max)
+		}
+	}
+	return nil
+}
 
 type Service interface {
 	Create(ctx context.Context, userID uint, req CreateAddressRequest) (*model.UserFavoriteAddress, error)
@@ -67,7 +101,6 @@ func (s *service) Create(ctx context.Context, userID uint, req CreateAddressRequ
 	if err != nil {
 		return nil, err
 	}
-
 	addr := &model.UserFavoriteAddress{
 		UserID:           userID,
 		Label:            label,
@@ -89,6 +122,9 @@ func (s *service) Create(ctx context.Context, userID uint, req CreateAddressRequ
 		Citycode:         strings.TrimSpace(req.Citycode),
 		Adcode:           strings.TrimSpace(req.Adcode),
 		RawPOIJSON:       compactRawJSON(req.AMapPOI),
+	}
+	if err := validateLengths(addr); err != nil {
+		return nil, err
 	}
 
 	var created model.UserFavoriteAddress
@@ -182,6 +218,9 @@ func (s *service) Update(ctx context.Context, userID uint, id uint, req UpdateAd
 
 		if req.AMapPOI != nil {
 			addr.RawPOIJSON = compactRawJSON(*req.AMapPOI)
+		}
+		if err := validateLengths(addr); err != nil {
+			return err
 		}
 
 		// Only supports "set default".

@@ -1,13 +1,12 @@
 package mcp
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 )
@@ -18,21 +17,16 @@ import (
 // - 该实现只覆盖当前阶段需要的最小能力（initialize / tools/list / tools/call）。
 // - 未来可以扩展为连接多个 server、支持 resources 等。
 type StdioClient struct {
-	opts    StdioClientOptions
-	process *stdioProcess
-	callMu  chan struct{}
-	stateMu sync.Mutex
-	closed  bool
-	nextID  int64
-}
-
-type stdioProcess struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  *bufio.Reader
-	output  io.ReadCloser
-	done    chan struct{}
-	waitErr error
+	opts       StdioClientOptions
+	process    *stdioProcess
+	callMu     chan struct{}
+	stateMu    sync.Mutex
+	closed     bool
+	nextID     int64
+	closeOnce  sync.Once
+	closeStart chan struct{}
+	closeDone  chan struct{}
+	closeErr   error
 }
 
 type StdioClientOptions struct {
@@ -44,19 +38,40 @@ type StdioClientOptions struct {
 	Env     map[string]string
 }
 
+type stdioExchange struct {
+	method string
+	params any
+	result any
+}
+
+type stdioRPCError struct {
+	code    int
+	message string
+}
+
+func (e *stdioRPCError) Error() string {
+	return fmt.Sprintf("mcp error code=%d message=%s", e.code, e.message)
+}
+
 func NewStdioClient(ctx context.Context, opts StdioClientOptions) (*StdioClient, error) {
 	if opts.Command == "" {
 		return nil, fmt.Errorf("mcp stdio client: empty command")
 	}
+	opts.Args = slices.Clone(opts.Args)
+	opts.Env = maps.Clone(opts.Env)
 
 	c := &StdioClient{
-		opts:   opts,
-		callMu: make(chan struct{}, 1),
-		nextID: 1,
+		opts:       opts,
+		callMu:     make(chan struct{}, 1),
+		nextID:     1,
+		closeStart: make(chan struct{}),
+		closeDone:  make(chan struct{}),
 	}
 	c.callMu <- struct{}{}
 
-	if err := c.call(ctx, "initialize", nil, nil); err != nil {
+	// 最小握手：initialize
+	if err := c.initialize(ctx); err != nil {
+		_ = c.Close()
 		return nil, err
 	}
 
@@ -64,65 +79,24 @@ func NewStdioClient(ctx context.Context, opts StdioClientOptions) (*StdioClient,
 }
 
 func (c *StdioClient) Close() error {
-	if c.callMu == nil {
-		return nil
-	}
-	c.stateMu.Lock()
-	c.closed = true
-	process := c.process
-	c.stateMu.Unlock()
-	if process != nil {
-		_ = process.stdin.Close()
-		select {
-		case <-process.done:
-		case <-time.After(2 * time.Second):
-			_ = process.cmd.Process.Kill()
-			<-process.done
+	c.closeOnce.Do(func() {
+		defer close(c.closeDone)
+		close(c.closeStart)
+		c.stateMu.Lock()
+		c.closed = true
+		process := c.process
+		c.stateMu.Unlock()
+		if process != nil {
+			c.terminate(process)
 		}
-		_ = process.output.Close()
-	}
-	<-c.callMu
-	defer func() { c.callMu <- struct{}{} }()
-	if process != nil {
-		return process.waitErr
-	}
-	return nil
-}
-
-func (c *StdioClient) startProcess() (*stdioProcess, error) {
-	cmd := exec.Command(c.opts.Command, c.opts.Args...)
-	if c.opts.WorkDir != "" {
-		cmd.Dir = c.opts.WorkDir
-	}
-	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
-	for key, value := range c.opts.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("mcp stdio client: stdin pipe: %w", err)
-	}
-	stdout, output, err := os.Pipe()
-	if err != nil {
-		_ = stdin.Close()
-		return nil, fmt.Errorf("mcp stdio client: stdout pipe: %w", err)
-	}
-	cmd.Stdout = output
-	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = output.Close()
-		return nil, fmt.Errorf("mcp stdio client: start: %w", err)
-	}
-	_ = output.Close()
-	process := &stdioProcess{cmd: cmd, stdin: stdin, stdout: bufio.NewReader(stdout), output: stdout, done: make(chan struct{})}
-	// stdout 管道由本代持有，Wait 回收进程时不会提前关闭尚未读完的响应。
-	go func() {
-		process.waitErr = cmd.Wait()
-		close(process.done)
-	}()
-	return process, nil
+		<-c.callMu
+		c.callMu <- struct{}{}
+		if process != nil {
+			c.closeErr = process.waitErr
+		}
+	})
+	<-c.closeDone
+	return c.closeErr
 }
 
 func (c *StdioClient) ListTools(ctx context.Context) (ToolsListResult, error) {
@@ -159,17 +133,32 @@ func (c *StdioClient) CallToolText(ctx context.Context, name string, arguments m
 	return "", nil
 }
 
+func (c *StdioClient) initialize(ctx context.Context) error {
+	// MCP initialize 的 params 在不同实现中可能略有差异，这里使用最小字段，保持兼容。
+	params := map[string]any{
+		"clientInfo": map[string]any{
+			"name":    "food-agent",
+			"version": "0.0.1",
+		},
+	}
+	var ignore any
+	return c.call(ctx, "initialize", params, &ignore)
+}
+
 func (c *StdioClient) call(ctx context.Context, method string, params any, result any) error {
 	// 串行化调用，避免并发下读写乱序。
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-c.closeStart:
+		return fmt.Errorf("mcp client is closed")
 	case <-c.callMu:
 	}
 	defer func() { c.callMu <- struct{}{} }()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
 	c.stateMu.Lock()
 	if c.closed {
 		c.stateMu.Unlock()
@@ -179,17 +168,21 @@ func (c *StdioClient) call(ctx context.Context, method string, params any, resul
 	if process == nil {
 		var err error
 		process, err = c.startProcess()
-		c.process = process
+		if err == nil {
+			c.process = process
+		}
 		c.stateMu.Unlock()
 		if err != nil {
 			return err
 		}
 		initCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		if err := c.exchange(initCtx, process, "initialize", map[string]any{
-			"clientInfo": map[string]any{"name": "food-agent", "version": "0.0.1"},
-		}, nil); err != nil {
-			c.discard(process)
+		if err := c.exchange(initCtx, process, stdioExchange{
+			method: "initialize",
+			params: map[string]any{
+				"clientInfo": map[string]any{"name": "food-agent", "version": "0.0.1"},
+			},
+		}); err != nil {
 			return err
 		}
 	} else {
@@ -198,67 +191,58 @@ func (c *StdioClient) call(ctx context.Context, method string, params any, resul
 	if method == "initialize" {
 		return nil
 	}
-	return c.exchange(ctx, process, method, params, result)
+
+	return c.exchange(ctx, process, stdioExchange{method: method, params: params, result: result})
 }
 
-func (c *StdioClient) discard(process *stdioProcess) {
-	c.stateMu.Lock()
-	if c.process == process {
-		c.process = nil
-	}
-	c.stateMu.Unlock()
-	_ = process.cmd.Process.Kill()
-	_ = process.stdin.Close()
-	_ = process.output.Close()
-	<-process.done
-}
-
-func (c *StdioClient) exchange(ctx context.Context, process *stdioProcess, method string, params any, result any) (err error) {
+func (c *StdioClient) exchange(ctx context.Context, process *stdioProcess, request stdioExchange) (err error) {
 	watchStop := make(chan struct{})
 	watchExited := make(chan struct{})
 	go func() {
 		defer close(watchExited)
 		select {
 		case <-ctx.Done():
-			_ = process.cmd.Process.Kill()
-			_ = process.stdin.Close()
-			_ = process.output.Close()
+			c.terminate(process)
 		case <-watchStop:
 		}
 	}()
 	defer func() {
 		close(watchStop)
 		<-watchExited
-		if ctx.Err() != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
 			c.discard(process)
-			err = ctx.Err()
+			err = ctxErr
+			return
+		}
+		if err != nil {
+			var rpcErr *stdioRPCError
+			if errors.As(err, &rpcErr) {
+				return
+			}
+			c.discard(process)
 		}
 	}()
 
+	c.stateMu.Lock()
 	id := c.nextID
 	c.nextID++
+	c.stateMu.Unlock()
 
 	req := jsonRPCRequest{
 		JSONRPC: "2.0",
 		ID:      id,
-		Method:  method,
-		Params:  params,
+		Method:  request.method,
+		Params:  request.params,
 	}
 
 	if err := writeMessage(process.stdin, req); err != nil {
-		c.discard(process)
 		return fmt.Errorf("mcp write request: %w", err)
 	}
 
 	// 读取响应（简单实现：串行调用，按顺序读取一条响应即可）。
 	raw, err := readMessage(process.stdout)
 	if err != nil {
-		c.discard(process)
 		return fmt.Errorf("mcp read response: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		c.discard(process)
-		return err
 	}
 
 	var resp jsonRPCResponse
@@ -266,18 +250,18 @@ func (c *StdioClient) exchange(ctx context.Context, process *stdioProcess, metho
 		return fmt.Errorf("mcp unmarshal response: %w", err)
 	}
 	if resp.Error != nil {
-		return fmt.Errorf("mcp error code=%d message=%s", resp.Error.Code, resp.Error.Message)
+		return &stdioRPCError{code: resp.Error.Code, message: resp.Error.Message}
 	}
 
 	// 将 resp.Result 再次 marshal/unmarshal 到具体结构体，避免使用 interface{} 直接断言。
-	if result == nil {
+	if request.result == nil {
 		return nil
 	}
 	b, err := json.Marshal(resp.Result)
 	if err != nil {
 		return fmt.Errorf("mcp marshal result: %w", err)
 	}
-	if err := json.Unmarshal(b, result); err != nil {
+	if err := json.Unmarshal(b, request.result); err != nil {
 		return fmt.Errorf("mcp unmarshal result: %w", err)
 	}
 	return nil

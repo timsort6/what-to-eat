@@ -65,7 +65,7 @@ func (d *UserFavoriteAddressDAO) ListByUserID(ctx context.Context, userID uint, 
 	var addrs []model.UserFavoriteAddress
 	if err := d.db.WithContext(ctx).
 		Where("user_id = ?", userID).
-		Order("is_default desc, id asc").
+		Order("is_default desc, id desc").
 		Offset(offset).
 		Limit(limit).
 		Find(&addrs).Error; err != nil {
@@ -78,7 +78,7 @@ func (d *UserFavoriteAddressDAO) ListAllByUserID(ctx context.Context, userID uin
 	var addrs []model.UserFavoriteAddress
 	if err := d.db.WithContext(ctx).
 		Where("user_id = ?", userID).
-		Order("is_default desc, id asc").
+		Order("is_default desc, id desc").
 		Find(&addrs).Error; err != nil {
 		return nil, fmt.Errorf("list all favorite addresses by user_id=%d: %w", userID, err)
 	}

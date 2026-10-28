@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
+
 	"github.com/cloudwego/eino/components/model"
 
 	openai "github.com/cloudwego/eino-ext/components/model/openai"
@@ -23,12 +26,15 @@ type Client struct {
 	// - 上层如果需要强类型（例如 model.ChatModel），可在上层做断言；
 	// - pkg/client/llm 只承担“构建”和“保存配置”的职责。
 	ChatModel model.BaseChatModel
+	// DecisionChatModel 是决策阶段模型；未配置 decision_model 时与 ChatModel 为同一实例。
+	DecisionChatModel model.BaseChatModel
 
 	// 以下字段用于透传/诊断（例如日志打印、debug 输出）。
-	Model    string
-	Language string
-	BaseURL  string
-	APIKey   string
+	Model         string
+	DecisionModel string
+	Language      string
+	BaseURL       string
+	APIKey        string
 }
 
 // NewClient 基于默认 context 构建 LLM Client。
@@ -50,30 +56,39 @@ func NewClientWithContext(ctx context.Context, opts *Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	decisionModel, decisionChatModel := opts.Model, chatModel
+	if name := strings.TrimSpace(opts.DecisionModel); name != "" {
+		decisionModel = name
+		if decisionChatModel, err = openai.NewChatModel(ctx, chatModelConfig(opts, decisionModel)); err != nil {
+			return nil, err
+		}
+	}
 
 	return &Client{
-		ChatModel: chatModel,
-		Model:     opts.Model,
-		Language:  opts.Language,
-		BaseURL:   opts.BaseURL,
-		APIKey:    opts.APIKey,
+		ChatModel:         chatModel,
+		DecisionChatModel: decisionChatModel,
+		Model:             opts.Model,
+		DecisionModel:     decisionModel,
+		Language:          opts.Language,
+		BaseURL:           opts.BaseURL,
+		APIKey:            opts.APIKey,
 	}, nil
 }
 
 // NewOpenAIChatModel 使用 `github.com/cloudwego/eino-ext/components/model/openai` 构建 ChatModel。
-//
-// 注意：
-// - 这里只配置最核心的字段（APIKey/BaseURL/Model），尽量保证跨版本可迁移；
-// - Options 中预留了 Timeout/Retry 等字段，你可以结合当前 eino-ext 版本在此补齐。
 func NewOpenAIChatModel(ctx context.Context, opts *Options) (model.BaseChatModel, error) {
 	if opts == nil {
 		return nil, fmt.Errorf("llm options is nil")
 	}
+	return openai.NewChatModel(ctx, chatModelConfig(opts, opts.Model))
+}
 
-	cfg := &openai.ChatModelConfig{
+// chatModelConfig 透传超时（单次 HTTP 请求含流式读取）。eino-ext openai v0.1.7 无重试配置项，max_retries 不接入，保持不自动重试。
+func chatModelConfig(opts *Options, modelName string) *openai.ChatModelConfig {
+	return &openai.ChatModelConfig{
 		APIKey:  opts.APIKey,
 		BaseURL: opts.BaseURL,
-		Model:   opts.Model,
+		Model:   modelName,
+		Timeout: time.Duration(opts.TimeoutSeconds) * time.Second,
 	}
-	return openai.NewChatModel(ctx, cfg)
 }

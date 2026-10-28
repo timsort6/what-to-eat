@@ -16,7 +16,18 @@ type Config struct {
 	// MCP holds Model Context Protocol configuration (clients + servers).
 	MCP MCPConfig `mapstructure:"mcp" yaml:"mcp"`
 
+	Agent AgentConfig `mapstructure:"agent" yaml:"agent"`
+
 	Log LogConfig `mapstructure:"log" yaml:"log"`
+}
+
+type AgentConfig struct {
+	PromptFile     string   `mapstructure:"prompt_file" yaml:"prompt_file"`
+	AllowedTools   []string `mapstructure:"allowed_tools" yaml:"allowed_tools"`
+	MaxSteps       int      `mapstructure:"max_steps" yaml:"max_steps"`
+	MaxModelCalls  int      `mapstructure:"max_model_calls" yaml:"max_model_calls"`
+	MaxToolCalls   int      `mapstructure:"max_tool_calls" yaml:"max_tool_calls"`
+	TimeoutSeconds int      `mapstructure:"timeout_seconds" yaml:"timeout_seconds"`
 }
 
 type ServerConfig struct {

@@ -37,7 +37,7 @@ func newTestClient(t *testing.T, env map[string]string) *StdioClient {
 	return client
 }
 
-func TestStdioClient_ImmediateCancellationPreservesSuccessfulProcess(t *testing.T) {
+func TestStdioClient_ImmediateCancellationPreservesClient(t *testing.T) {
 	client := newTestClient(t, nil)
 	process := client.process
 	callCtx := testContext(t)
@@ -54,6 +54,50 @@ func TestStdioClient_ImmediateCancellationPreservesSuccessfulProcess(t *testing.
 		if client.process != process {
 			t.Fatal("successful call caused an unexpected restart")
 		}
+	}
+}
+
+func TestStdioClient_RPCErrorPreservesProcess(t *testing.T) {
+	client := newTestClient(t, nil)
+	process := client.process
+	ctx := testContext(t)
+
+	if _, err := client.CallTool(ctx, "rpc_error", nil); err == nil {
+		t.Fatal("expected JSON-RPC error")
+	}
+	if client.process != process {
+		t.Fatal("valid JSON-RPC error discarded the process")
+	}
+	if _, err := client.CallTool(ctx, "ok", nil); err != nil {
+		t.Fatalf("call after JSON-RPC error: %v", err)
+	}
+	if client.process != process {
+		t.Fatal("call after JSON-RPC error restarted the process")
+	}
+}
+
+func TestStdioClient_RestartUsesCopiedOptions(t *testing.T) {
+	args := []string{"-test.run=TestMCPHelperProcess", "--"}
+	env := map[string]string{"MCP_HELPER": "1", "GORACE": "atexit_sleep_ms=0"}
+	client, err := NewStdioClient(testContext(t), StdioClientOptions{
+		Command: os.Args[0],
+		Args:    args,
+		Env:     env,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	args[0] = "-test.run=TestNoSuchMCPHelperProcess"
+	env["MCP_HELPER"] = "0"
+	ctx, cancel := context.WithTimeout(testContext(t), 100*time.Millisecond)
+	defer cancel()
+	if _, err := client.CallTool(ctx, "blocked", nil); err != context.DeadlineExceeded {
+		t.Fatalf("expected deadline exceeded, got %v", err)
+	}
+	if _, err := client.CallTool(testContext(t), "ok", nil); err != nil {
+		t.Fatalf("restart did not use copied options: %v", err)
 	}
 }
 
@@ -164,6 +208,80 @@ func TestStdioClient_QueuedCancellationDoesNotKillActiveCall(t *testing.T) {
 	}
 }
 
+func TestStdioClient_CloseCancelsActiveAndQueuedCalls(t *testing.T) {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := listener.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	client := newTestClient(t, map[string]string{"MCP_GATE": listener.Addr().String()})
+	callCtx := testContext(t)
+	activeResult := make(chan error, 1)
+	go func() {
+		_, err := client.CallTool(callCtx, "blocked", nil)
+		activeResult <- err
+	}()
+	connection, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := io.ReadFull(connection, make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+
+	queuedBase, queuedCancel := context.WithCancel(callCtx)
+	defer queuedCancel()
+	queuedCtx := &notifyingContext{Context: queuedBase, ready: make(chan struct{})}
+	queuedResult := make(chan error, 1)
+	go func() {
+		_, err := client.CallTool(queuedCtx, "ok", nil)
+		queuedResult <- err
+	}()
+	select {
+	case <-queuedCtx.ready:
+	case <-time.After(time.Second):
+		t.Fatal("queued call did not begin waiting")
+	}
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- client.Close() }()
+	var firstCloseErr error
+	select {
+	case firstCloseErr = <-closeResult:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return promptly")
+	}
+	select {
+	case <-queuedResult:
+	case <-time.After(time.Second):
+		t.Fatal("queued call did not return after Close")
+	}
+	select {
+	case <-activeResult:
+	case <-time.After(time.Second):
+		t.Fatal("active call did not return after Close")
+	}
+
+	secondClose := make(chan error, 1)
+	go func() { secondClose <- client.Close() }()
+	var secondCloseErr error
+	select {
+	case secondCloseErr = <-secondClose:
+	case <-time.After(time.Second):
+		t.Fatal("second Close did not return promptly")
+	}
+	if secondCloseErr != firstCloseErr {
+		t.Fatalf("Close is not idempotent: first=%v second=%v", firstCloseErr, secondCloseErr)
+	}
+	if _, err := client.CallTool(testContext(t), "ok", nil); err == nil {
+		t.Fatal("closed client accepted a new call")
+	}
+}
+
 type notifyingContext struct {
 	context.Context
 	ready chan struct{}
@@ -223,6 +341,16 @@ func TestMCPHelperProcess(t *testing.T) {
 			}
 		}
 		text := "ok"
+		if params.Name == "rpc_error" {
+			if err := writeMessage(os.Stdout, jsonRPCResponse{
+				JSONRPC: "2.0",
+				ID:      request.ID,
+				Error:   &jsonRPCError{Code: -32000, Message: "expected test error"},
+			}); err != nil {
+				os.Exit(1)
+			}
+			continue
+		}
 		if params.Name == "exit" {
 			text = strings.Repeat("x", 1<<20)
 		}

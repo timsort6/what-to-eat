@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // POI2Service groups Place Search 2.0 APIs (v5).
@@ -78,14 +79,16 @@ type POI2POI struct {
 	Adcode   string `json:"adcode"`
 	Citycode string `json:"citycode"`
 
-	Tel         string `json:"tel"`
-	Tag         string `json:"tag"`
-	Rating      string `json:"rating"`
-	Cost        string `json:"cost"`
-	ParkingType string `json:"parking_type"`
-	Alias       string `json:"alias"`
-	Keytag      string `json:"keytag"`
-	Rectag      string `json:"rectag"`
+	Tel          string `json:"tel"`
+	Tag          string `json:"tag"`
+	Rating       string `json:"rating"`
+	Cost         string `json:"cost"`
+	CostCurrency string `json:"cost_currency"`
+	CostBasis    string `json:"cost_basis"`
+	ParkingType  string `json:"parking_type"`
+	Alias        string `json:"alias"`
+	Keytag       string `json:"keytag"`
+	Rectag       string `json:"rectag"`
 
 	EntrLocation string `json:"entr_location"`
 	ExitLocation string `json:"exit_location"`
@@ -118,25 +121,30 @@ func (p *POI2POI) UnmarshalJSON(data []byte) error {
 	p.Adcode = flexString(raw["adcode"])
 	p.Citycode = flexString(raw["citycode"])
 	p.Tel = flexString(raw["tel"])
-	p.Tag = flexString(raw["tag"])
 	p.Rating = flexString(raw["rating"])
-	p.Cost = flexString(raw["cost"])
 	p.ParkingType = flexString(raw["parking_type"])
 	p.Alias = flexString(raw["alias"])
 	p.Keytag = flexString(raw["keytag"])
 	p.Rectag = flexString(raw["rectag"])
-	p.EntrLocation = flexString(raw["entr_location"])
-	p.ExitLocation = flexString(raw["exit_location"])
+	p.EntrLocation, p.ExitLocation = flexString(raw["entr_location"]), flexString(raw["exit_location"])
 	p.Gridcode = flexString(raw["gridcode"])
-	p.OpentimeToday = flexString(raw["opentime_today"])
-	p.OpentimeWeek = flexString(raw["opentime_week"])
+	business, currencyField := raw, "cost_currency"
+	if nested, present := raw["business"]; present {
+		business, currencyField = nil, "currency"
+		if err := json.Unmarshal(nested, &business); err != nil {
+			business = nil
+		}
+	}
+	p.Tag, p.Cost = poi2BusinessString(business["tag"]), poi2BusinessText(business["cost"])
+	p.CostCurrency, p.CostBasis = poi2BusinessString(business[currencyField]), poi2BusinessString(business["cost_basis"])
+	p.OpentimeToday, p.OpentimeWeek = poi2BusinessString(business["opentime_today"]), poi2BusinessString(business["opentime_week"])
 
 	known := map[string]struct{}{
 		"id": {}, "name": {}, "location": {}, "distance": {},
 		"type": {}, "typecode": {},
 		"pname": {}, "cityname": {}, "adname": {},
 		"address": {}, "pcode": {}, "adcode": {}, "citycode": {},
-		"tel": {}, "tag": {}, "rating": {}, "cost": {}, "parking_type": {}, "alias": {}, "keytag": {}, "rectag": {},
+		"tel": {}, "tag": {}, "rating": {}, "cost": {}, "cost_currency": {}, "cost_basis": {}, "business": {}, "parking_type": {}, "alias": {}, "keytag": {}, "rectag": {},
 		"entr_location": {}, "exit_location": {}, "gridcode": {},
 		"opentime_today": {}, "opentime_week": {},
 	}
@@ -151,46 +159,20 @@ func (p *POI2POI) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (p POI2POI) MarshalJSON() ([]byte, error) {
-	// Merge known fields and Extra to preserve as much of the original POI fields as possible.
-	// This is important for downstream "raw" passthrough (e.g. MCP -> web server -> frontend).
-	m := map[string]any{}
-
-	// Extra first (unknown fields).
-	for k, v := range p.Extra {
-		// Keep raw JSON to preserve original types.
-		m[k] = json.RawMessage(v)
+func poi2BusinessText(raw json.RawMessage) string {
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return ""
 	}
+	return number.String()
+}
 
-	// Known fields (strings).
-	m["id"] = p.ID
-	m["name"] = p.Name
-	m["location"] = p.Location
-	m["distance"] = p.Distance
-	m["type"] = p.Type
-	m["typecode"] = p.Typecode
-	m["pname"] = p.Pname
-	m["cityname"] = p.Cityname
-	m["adname"] = p.Adname
-	m["address"] = p.Address
-	m["pcode"] = p.Pcode
-	m["adcode"] = p.Adcode
-	m["citycode"] = p.Citycode
-	m["tel"] = p.Tel
-	m["tag"] = p.Tag
-	m["rating"] = p.Rating
-	m["cost"] = p.Cost
-	m["parking_type"] = p.ParkingType
-	m["alias"] = p.Alias
-	m["keytag"] = p.Keytag
-	m["rectag"] = p.Rectag
-	m["entr_location"] = p.EntrLocation
-	m["exit_location"] = p.ExitLocation
-	m["gridcode"] = p.Gridcode
-	m["opentime_today"] = p.OpentimeToday
-	m["opentime_week"] = p.OpentimeWeek
-
-	return json.Marshal(m)
+func poi2BusinessString(raw json.RawMessage) string {
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 // Text searches POIs by keywords/types: v5 /place/text.

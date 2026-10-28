@@ -51,5 +51,5 @@ type UserFavoriteAddress struct {
 	// 使用 text 以保证跨 pgsql/mysql 的兼容性。
 	RawPOIJSON string `gorm:"type:text"`
 
-	IsDefault bool `gorm:"not null;default:false"` // 是否默认地址（每个用户最多一个）
+	IsDefault bool `gorm:"not null;default:false"` // 是否默认地址
 }

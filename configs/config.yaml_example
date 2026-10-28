@@ -74,6 +74,14 @@ mcp:
       # 传给 MCP server 子进程的环境变量（可选）
       env: {}
 
+agent:
+  prompt_file: "prompts/food-agent.md"
+  allowed_tools: ["amap.poi2_around", "amap.poi2_text"]
+  max_steps: 8
+  max_model_calls: 4
+  max_tool_calls: 3
+  timeout_seconds: 30
+
 log:
   level: "info"
   # 为空表示只输出到 stdout；不为空则同时输出到文件（支持滚动）
